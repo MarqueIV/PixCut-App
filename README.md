@@ -44,6 +44,10 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 sudo usermod -aG plugdev $USER   # log out and back in after this
 ```
 
+#### Deploy for Raspberry Pi
+
+A fully automated deployment script is included for kiosk deployment to Raspberry Pi OS — see [Raspberry Pi Kiosk Deployment](#raspberry-pi-kiosk-deployment) below.
+
 ### Windows
 
 ```bat
@@ -329,7 +333,7 @@ python3 pixcut_cli.py scan
 
 An optional local web server for building sticker sheets interactively — no command line required during a session. The CLI remains fully independent.
 
-**Platform note:** The kiosk is designed for **Raspberry Pi 4 or newer** running Raspberry Pi OS. A Pi 3B will struggle — Firefox is slow and Chromium won't launch on current Raspberry Pi OS. USB hot-plug detection works on Linux (`/media`, `/mnt`) and macOS (`/Volumes`).
+**Platform note:** The kiosk is designed for **Raspberry Pi 4 or newer** running Raspberry Pi OS. A Pi 3B will struggle — Firefox is slow and Chromium won't launch on current Raspberry Pi OS on Pi 3B.
 
 ```bash
 python server.py
@@ -412,7 +416,7 @@ stickers/
     kernelcon.png       # appears under "2024-events" header
 ```
 
-USB drives are automatically scanned for PNG files and appear under a `USB: <label>` header. The grid refreshes automatically within 5 seconds of a drive being plugged or unplugged. Supported mount roots: `/media` and `/mnt` (Linux), `/Volumes` (macOS). Pass `--no-usb` to disable USB drive scanning entirely.
+USB drives are automatically scanned for PNG files and appear under a `USB: <label>` header. The grid refreshes automatically within 5 seconds of a drive being plugged or unplugged. Supported mount roots: `/media` and `/mnt` (Linux), `/Volumes` (macOS), and External USB drives (Windows). Pass `--no-usb` to disable USB drive scanning entirely.
 
 ### Background images
 
