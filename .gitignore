@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Claude Code local settings
+.claude/
+
+# Runtime & generated files
+run-logs/
+output/
+
+# Dev research notes (not for distribution)
+research/
+
+# Personal sticker assets
+stickers/2020/
+stickers/misc/
+backgrounds/aiart-background.jpg
+
+# test/personal image and vector files
+tests/

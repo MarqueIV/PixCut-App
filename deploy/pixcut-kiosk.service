@@ -1,0 +1,17 @@
+[Unit]
+Description=PixCut Kiosk Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=sticker
+WorkingDirectory=/home/sticker/pixcut-app
+ExecStart=/home/sticker/pixcut-app/.venv/bin/python server.py --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

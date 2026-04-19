@@ -1,0 +1,13 @@
+# udev rules for PixCut S1 sticker printer/cutter (VID 0x302C, PID 0x3101)
+# Grants read/write access to members of the plugdev group without root.
+#
+# Install:
+#   sudo cp 99-pixcut.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   # Then unplug and reconnect the printer.
+#
+# If your user is not in the plugdev group:
+#   sudo usermod -aG plugdev $USER
+#   # Log out and back in for the group change to take effect.
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="302c", ATTRS{idProduct}=="3101", MODE="0666", GROUP="plugdev"

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en" translate="no">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="translation" content="no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARTHAX - Sticker Kiosk</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <link rel="stylesheet" href="/static/style.css?v=6" />
+</head>
+<body>
+  <!-- Left panel: live canvas preview -->
+  <div id="panel-canvas">
+    <div id="canvas-header">
+      <h1 id="title"><img src="/static/arthax.png" alt="Arthax" height="25" valign="top" /> Sticker Kiosk</h1>
+      <button id="btn-cutlines" class="btn btn-secondary btn-sm" onclick="toggleCutlines()">Show Cutlines</button>
+    </div>
+
+    <div id="canvas-preview-wrap">
+      <img id="canvas-preview" src="/api/canvas/preview.jpg" alt="Canvas preview" />
+      <svg id="cutline-overlay" class="hidden"></svg>
+      <svg id="ruler-top" class="ruler hidden"></svg>
+      <svg id="ruler-left" class="ruler hidden"></svg>
+      <div id="ruler-corner" class="ruler-corner hidden"></div>
+      <div id="canvas-loading" class="hidden">
+        <div class="spinner"></div>
+      </div>
+    </div>
+
+    <div id="overflow-banner" class="hidden">
+      <span>&#9888;</span> Some stickers don't fit — reduce count or remove stickers.
+    </div>
+  </div>
+
+  <!-- Right panel: sticker picker + controls -->
+  <div id="panel-picker">
+    <div id="picker-header">
+      <h2>Stickers</h2>
+      <span id="count-label">0 selected</span>
+    </div>
+
+    <div id="sticker-grid"></div>
+
+    <div id="controls">
+      <button id="btn-clear" class="btn btn-secondary" onclick="clearCanvas()">Clear Canvas</button>
+      <button id="btn-print" class="btn btn-primary" onclick="startPrint()">Print &amp; Cut</button>
+    </div>
+  </div>
+
+  <!-- Admin settings overlay (secret: tap title 5×) -->
+  <div id="admin-overlay" class="hidden">
+    <div id="admin-modal">
+      <h2>Admin Settings</h2>
+      <div class="admin-field">
+        <label for="admin-kp">Knife Pressure (1–100)</label>
+        <input id="admin-kp" type="number" min="1" max="100" value="42" />
+      </div>
+      <div class="admin-field">
+        <label for="admin-cut-margin">Cut Margin (mm) — outward offset from sticker edge</label>
+        <input id="admin-cut-margin" type="number" min="0" max="20" step="0.5" value="1" />
+      </div>
+      <div class="admin-field">
+        <label for="admin-padding">Sticker Gap (mm) — space between stickers</label>
+        <input id="admin-padding" type="number" min="0" max="20" step="0.5" value="2" />
+      </div>
+      <div class="admin-field">
+        <label for="admin-margin">Left Paper Margin (mm)</label>
+        <input id="admin-margin" type="number" min="0" max="20" step="0.5" value="3" />
+      </div>
+
+      <div class="admin-divider"></div>
+
+      <div class="admin-field admin-field-row">
+        <label for="admin-perf-cut">Perf-Cut (pop-out lines)</label>
+        <input id="admin-perf-cut" type="checkbox" onchange="togglePerfFields()" />
+      </div>
+
+      <div id="perf-fields" class="hidden">
+        <div class="admin-field">
+          <label for="admin-perf-kp">Perf-Cut Knife Pressure (1–100)</label>
+          <input id="admin-perf-kp" type="number" min="1" max="100" value="53" />
+        </div>
+        <div class="admin-field">
+          <label for="admin-perf-dash">Dash Length (mm, 0.1–20)</label>
+          <input id="admin-perf-dash" type="number" min="0.1" max="20" step="0.1" value="8" />
+        </div>
+        <div class="admin-field">
+          <label for="admin-perf-gap">Gap Length (mm, 0.01–5)</label>
+          <input id="admin-perf-gap" type="number" min="0.01" max="5" step="0.01" value="0.05" />
+        </div>
+      </div>
+
+      <div class="admin-divider"></div>
+
+      <div class="admin-field">
+        <label for="admin-bg-image">Background Image (print only, no cut)</label>
+        <select id="admin-bg-image">
+          <option value="">— None —</option>
+        </select>
+      </div>
+
+      <div class="admin-divider"></div>
+      <div class="admin-field">
+        <label>Export Canvas</label>
+      </div>
+      <div id="export-actions">
+        <a id="btn-download-jpg" class="btn btn-secondary" href="/api/canvas/preview.jpg?download=1" download="layout.jpg">JPEG Image</a>
+        <a id="btn-download-svg" class="btn btn-secondary" href="/api/canvas/preview.svg" download="layout_cut.svg">SVG Cutlines</a>
+        <a id="btn-download-plt" class="btn btn-secondary" href="/api/canvas/preview.plt" download="layout_cut.plt">PLT File</a>
+      </div>
+      <div class="admin-divider"></div>
+      <div id="admin-actions">
+          <button class="btn btn-secondary" onclick="closeAdmin()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveAdmin()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Print status overlay -->
+  <div id="print-overlay" class="hidden">
+    <div id="print-modal">
+      <div id="print-icon">
+        <div class="spinner large"></div>
+      </div>
+      <h2 id="print-title">Printing…</h2>
+      <p id="print-message">Starting print job…</p>
+      <div id="print-error-actions" class="hidden">
+        <button class="btn btn-secondary" onclick="dismissPrint()">Dismiss</button>
+      </div>
+      <div id="print-done-actions" class="hidden">
+        <button class="btn btn-primary" onclick="dismissPrint()">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=6"></script>
+</body>
+</html>

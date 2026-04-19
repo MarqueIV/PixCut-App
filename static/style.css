@@ -1,0 +1,677 @@
+/* PixCut Kiosk — styles */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:          #111318;
+  --surface:     #1c1f26;
+  --surface2:    #242830;
+  --border:      #2e3340;
+  --text:        #e8eaf0;
+  --text-dim:    #7b8197;
+  --accent:      #4f8ef7;
+  --accent-dark: #3a72d4;
+  --success:     #3ecf72;
+  --warn:        #f4a223;
+  --danger:      #e45454;
+  --card-sel:    #1a2540;
+  --card-sel-border: #4f8ef7;
+  --radius:      10px;
+  --shadow:      0 2px 12px rgba(0,0,0,.45);
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Two-panel layout
+--------------------------------------------------------------------------- */
+body {
+  display: flex;
+  height: 100vh;
+}
+
+/* Left: canvas preview */
+#panel-canvas {
+  flex: 0 0 44%;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  gap: 14px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+
+/* Right: sticker picker */
+#panel-picker {
+  flex: 1 1 56%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   Canvas panel
+--------------------------------------------------------------------------- */
+#canvas-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+#canvas-header h1 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: .01em;
+  color: var(--text);
+}
+
+
+/* Canvas preview image */
+#canvas-preview-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface2);
+  border-radius: var(--radius);
+  overflow: hidden;
+  padding-top: 18px;
+  padding-left: 20px;
+}
+
+#canvas-preview {
+  /* 4:7 aspect; show as much as fits with letterboxing */
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+  border-radius: 4px;
+}
+
+/* Loading overlay on canvas */
+#canvas-loading {
+  position: absolute;
+  inset: 0;
+  background: rgba(17,19,24,.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+}
+
+/* Overflow banner */
+#overflow-banner {
+  background: rgba(244,162,35,.12);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: .85rem;
+  flex-shrink: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Picker panel
+--------------------------------------------------------------------------- */
+#picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 18px 10px;
+  flex-shrink: 0;
+}
+
+#picker-header h2 {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+#count-label {
+  font-size: .8rem;
+  color: var(--text-dim);
+}
+
+/* Scrollable sticker grid */
+#sticker-grid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px 14px 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+
+#sticker-grid::-webkit-scrollbar { width: 5px; }
+#sticker-grid::-webkit-scrollbar-track { background: transparent; }
+#sticker-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Sticker card */
+.sticker-card {
+  position: relative;
+  background: var(--surface2);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, transform .1s;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sticker-card:hover:not(.selected) {
+  border-color: var(--accent);
+  background: #1e2233;
+  transform: scale(1.02);
+}
+
+.sticker-card.selected {
+  border-color: var(--card-sel-border);
+  background: var(--card-sel);
+}
+
+.sticker-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: 6px;
+  background: transparent;
+  pointer-events: none;
+}
+
+.sticker-label {
+  font-size: .72rem;
+  color: var(--text-dim);
+  text-align: center;
+  line-height: 1.2;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.sticker-card.selected .sticker-label {
+  color: var(--text);
+}
+
+/* Remove (×) button */
+.remove-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(228,84,84,.85);
+  color: #fff;
+  border: none;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .15s;
+  z-index: 2;
+}
+
+.remove-btn:hover { background: var(--danger); }
+
+/* Count controls (+/-/badge) */
+.count-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.count-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .15s, border-color .15s;
+}
+
+.count-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.count-badge {
+  font-size: .9rem;
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 20px;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------------------
+   Bottom controls
+--------------------------------------------------------------------------- */
+#controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+
+.btn {
+  flex: 1;
+  padding: 14px;
+  border-radius: var(--radius);
+  border: none;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, opacity .15s, transform .08s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn:active { transform: scale(.97); }
+
+.btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) { background: var(--accent-dark); }
+
+.btn-secondary {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover:not(:disabled) { background: var(--border); }
+
+/* Secret tap hint on title */
+#title { cursor: default; user-select: none; }
+
+/* ---------------------------------------------------------------------------
+   Admin settings overlay
+--------------------------------------------------------------------------- */
+#admin-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  backdrop-filter: blur(4px);
+}
+
+#admin-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px 40px;
+  width: 360px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+#admin-modal h2 {
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-field label {
+  font-size: .8rem;
+  color: var(--text-dim);
+}
+
+.admin-field input {
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 1rem;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.admin-field input::-webkit-outer-spin-button,
+.admin-field input::-webkit-inner-spin-button { -webkit-appearance: none; }
+
+.admin-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#export-actions, #admin-actions {
+  display: flex;
+  gap: 10px;
+}
+
+#export-actions, #admin-actions .btn { flex: 1; }
+
+/* SVG download link styled as a button */
+a.btn {
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.admin-divider {
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+.admin-field-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.admin-field-row label {
+  font-size: .85rem;
+  color: var(--text);
+}
+
+.admin-field-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+#perf-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ---------------------------------------------------------------------------
+   Scale slider
+--------------------------------------------------------------------------- */
+.scale-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* stretch to card content width without overflowing */
+  align-self: stretch;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.scale-slider {
+  /* flex: 1 1 0% lets the slider shrink below its natural min-width in Safari */
+  flex: 1 1 0%;
+  min-width: 0;
+  height: 40px;          /* tall touch target; track styled via pseudo-element */
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.scale-slider::-webkit-slider-runnable-track {
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.scale-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  margin-top: -12px;     /* center 32px thumb on 8px track */
+  transition: background .15s;
+}
+
+.scale-slider::-webkit-slider-thumb:hover { background: var(--accent-dark); }
+.scale-slider::-moz-range-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+.scale-label {
+  font-size: .7rem;
+  color: var(--text-dim);
+  min-width: 30px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Print overlay
+--------------------------------------------------------------------------- */
+#print-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(4px);
+}
+
+#print-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px 48px;
+  text-align: center;
+  max-width: 380px;
+  width: 90%;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+#print-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+#print-message {
+  color: var(--text-dim);
+  font-size: .95rem;
+  line-height: 1.5;
+}
+
+#print-icon {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-icon {
+  font-size: 3rem;
+  line-height: 1;
+}
+
+.status-icon.success { color: var(--success); }
+.status-icon.error   { color: var(--danger); }
+
+#print-error-actions,
+#print-done-actions {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+#print-error-actions .btn,
+#print-done-actions .btn {
+  flex: 1;
+}
+
+/* ---------------------------------------------------------------------------
+   Spinner
+--------------------------------------------------------------------------- */
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+
+.spinner.large {
+  width: 48px;
+  height: 48px;
+  border-width: 4px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------------------------------------------------------------------------
+   Cutline overlay
+--------------------------------------------------------------------------- */
+#cutline-overlay {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
+  overflow: visible;
+}
+
+#cutline-overlay path,
+#cutline-overlay circle,
+#cutline-overlay rect,
+#cutline-overlay polyline,
+#cutline-overlay polygon,
+#cutline-overlay line {
+  fill: none;
+  stroke: rgba(255, 60, 60, 0.75);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+
+.btn-sm {
+  flex: 0 0 auto;
+  font-size: .75rem;
+  padding: 4px 10px;
+}
+
+.btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ---------------------------------------------------------------------------
+   Canvas rulers
+--------------------------------------------------------------------------- */
+.ruler {
+  position: absolute;
+  pointer-events: none;
+  z-index: 10;
+  overflow: visible;
+}
+
+.ruler-corner {
+  position: absolute;
+  pointer-events: none;
+  z-index: 11;
+  background: #15171e;
+}
+
+/* ---------------------------------------------------------------------------
+   Sticker folder headers
+--------------------------------------------------------------------------- */
+.sticker-folder-header {
+  grid-column: 1 / -1;
+  padding: 6px 2px 2px;
+  font-size: .9rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+  margin-left: 10px;
+  background-color: var(--surface);
+}
+
+.sticker-folder-header:first-child {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Admin select element (matches existing input styling)
+--------------------------------------------------------------------------- */
+.admin-field select {
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 1rem;
+  appearance: auto;
+}
+
+.admin-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ---------------------------------------------------------------------------
+   Utility
+--------------------------------------------------------------------------- */
+.hidden { display: none !important; }

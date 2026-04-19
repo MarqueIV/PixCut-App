@@ -1,0 +1,483 @@
+# PixCut CLI + Kiosk
+
+Python toolset to control the Liene PixCut S1 over USB bulk endpoints.
+
+![PixCut CLI](docs/cli.png)
+
+## Overview
+
+This repo contains three independent but related tools:
+
+- **[PixCut CLI](#pixcut-cli)** (`pixcut_cli.py` + `pixcut/`) — command-line tool for sending print/cut jobs, auto-generating cut paths, and inspecting the printer over USB. This is the core; everything else builds on it.
+- **[pixcut-kiosk](#pixcut-kiosk-web-ui-server)** (`server.py` + `static/`) — a local web UI that wraps the CLI into a point-and-click sticker builder. No command line needed during a session.
+- **[Raspberry Pi deploy](#raspberry-pi-kiosk-deployment)** (`deploy.sh`, `deploy/99-pixcut.rules`, `deploy/pixcut-kiosk.service`) — automated script to sync and configure the kiosk on a Pi over SSH, including udev rules and a systemd service.
+
+If you just want to drive the printer from a Mac or PC, you only need the CLI. The kiosk and deploy script are for a dedicated touchscreen kiosk setup.
+
+---
+
+## Install
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+System deps:
+
+- **macOS**: `brew install libusb`
+- **Windows**: Windows is untested currently, but you will likely need the WinUSB driver via Zadig + matching `libusb-1.0.dll` in PATH.
+- **Linux (Raspberry Pi etc.)**: copy the included udev rule so the printer is accessible without root:
+
+  ```bash
+  sudo cp deploy/99-pixcut.rules /etc/udev/rules.d/
+  sudo udevadm control --reload-rules && sudo udevadm trigger
+  sudo usermod -aG plugdev $USER   # log out and back in after this
+  ```
+
+The `layout` command and kiosk UI require additional packages:
+
+```bash
+pip install Pillow scikit-image
+pip install shapely   # optional but recommended — accurate margin offsets for complex shapes
+```
+
+The kiosk server requires:
+
+```bash
+pip install -r requirements-server.txt   # fastapi, uvicorn
+```
+
+## Example files
+
+The repo includes a sample sticker (`meow.jpg` + `meow.svg`) and layout templates to help you get started:
+
+|File|Description|
+|---|---|
+|`examples/meow.jpg`|Sample print image — a die-cut cat sticker at 300 DPI|
+|`examples/meow.svg`|Matching hand-drawn cut paths for `meow.jpg`|
+|`examples/sticker-sheet-template.af`|Affinity Studio template showing a full 4×7″ sticker sheet layout|
+|`examples/sticker-sheet-template.pdf`|PDF version of the template (for Inkscape/Illustrator/other applications)|
+
+### Try a combo print+cut with the sample sticker
+
+```bash
+python3 pixcut_cli.py send --mode combo --jpg examples/meow.jpg --svg examples/meow.svg
+```
+
+### Auto-generate cut paths with `layout`
+
+If you have a PNG/JPG sticker image without a pre-drawn cut path, `layout` traces one automatically:
+
+```bash
+python3 pixcut_cli.py layout examples/meow.jpg --repeat 4 --out-dir ./output
+python3 pixcut_cli.py send --mode combo --jpg output/layout.jpg --plt output/layout.plt
+```
+
+### Sticker sheet template
+
+Open `examples/sticker-sheet-template.af` (Affinity Designer) or `examples/sticker-sheet-template.pdf` to see how to lay out artwork on the 4×7″ canvas. The template has separate layers for the SVG cut paths and the art. The art should be saved as a .jpg file, 1200×2100 px, and must be under 1 MiB in size; the SVG layer should be exported as simple paths without fills or any other art.
+
+---
+
+## PixCut CLI
+
+**Files:** `pixcut_cli.py`, `pixcut/`
+
+- `send`    — run a print-only or combo (print+cut) job.
+- `layout`  — auto-trace cut paths from PNG/JPG sticker images and export a print-ready sheet (no USB).
+- `convert` — offline SVG→PLT converter (no USB).
+- `query`   — send a single JSON request (get-prop, get-job-info, etc.).
+- `probe`   — batched property sweep + optional experimental methods; optional `set-prop` (guarded).
+- `printer` — send `pause-printer` or `resume-printer`.
+- `scan`    — list visible USB devices, highlighting PixCut devices.
+
+All commands share USB flags: `--vid/--pid --interface --out-ep --in-ep --data-interface --data-out-ep --data-in-ep --timeout-ms --auto-detect/--no-auto-detect`.
+Use `--verbose` to enable per-session file logging (see [Logging](#logging) below).
+
+Typical working endpoints (from captures): control JSON on interface **2** OUT `0x06` IN `0x86`; data on interface **3** OUT `0x04` IN `0x84`.
+
+### Logging
+
+By default no files are written — output goes to the console only. Pass `--verbose` to capture a full session directory under `run-logs/session-<timestamp>/`:
+
+- JSONL: `requests_sent.jsonl`, `responses_seen.jsonl`, `requests_and_responses.jsonl`
+- Raw frames: `raw/*.bin`
+- Any converted PLT files (when using `--svg`)
+
+---
+
+### send
+
+```zsh
+python3 pixcut_cli.py send \
+  --mode combo \
+  --jpg photo.jpg \
+  --plt path.plt \
+  --media-size 5313 --media-type 2030 \
+  --copies 1 --quality 4 \
+  --channel 14864 \
+  --kp 42
+```
+
+Modes:
+
+- `--mode combo` (default): requires `--jpg` and `--plt` (or `--svg` to convert to PLT).
+- `--mode print`: requires `--jpg`; sends a photo-only job (no cutting).
+
+Key options:
+
+- `--svg` auto-converts SVG → PLT and uploads the generated PLT. Supports color-coded perf-cut — see [convert](#convert-svg--plt-offline) below.
+- `--kp` kiss-cut knife pressure applied to standard paths (default 42).
+- `--perf-color HEX` stroke color marking perf-cut paths in `--svg` input (default `ff8800` / orange).
+- `--perf-kp N` knife pressure for perf-cut paths (default 53).
+- `--perf-dash MM` perf-cut dash length in mm (default 8.0).
+- `--perf-gap MM` gap between dashes in mm (default 0.05).
+- `--job-type` optional; defaults to 0 for print, 600 for combo/cut.
+- `--chunk-delay-ms` (default 120) pacing between data chunks.
+- `--extlen` (default 4075) chunk size.
+- `--ack-timeout` per-chunk ACK wait (seconds).
+- `--heartbeat-interval` (default 5s) background get-prop pings.
+- `--poll-interval` (default 10s) job status polling after upload.
+- `--max-poll-seconds` overall poll timeout (0 = unlimited).
+- `--id-strategy {monotonic,fixed}`: monotonic (default) uses ever-increasing ids; fixed mimics captured ids.
+- `--interface`: If auto-detect fails, set endpoints explicitly, e.g. `--interface 2 --out-ep 0x06 --in-ep 0x86 --data-interface 3 --data-out-ep 0x04 --data-in-ep 0x84`.
+
+Constraints:
+
+- JPG must be ≤ 1 MiB (device limit).
+
+---
+
+### layout (auto-cutlines from PNG/JPG)
+
+Traces cut paths from raster sticker images and packs them onto the 4×7″ canvas using a Maximal Rectangles packer (fills gaps beside tall stickers — much better than shelf-only packing). Requires `Pillow` and `scikit-image`.
+
+```zsh
+# Single sticker, 3 copies
+python3 pixcut_cli.py layout sticker.png --repeat 3 --out-dir ./output
+
+# Multiple stickers, paginate overflow onto additional sheets
+python3 pixcut_cli.py layout s1.png s2.png s3.png --paginate --out-dir ./output
+
+# JPEG / PNG without alpha
+python3 pixcut_cli.py layout photo.jpg --bg-white --out-dir ./output
+
+# With perf-cut (pop-out outer dashed lines at higher KP)
+python3 pixcut_cli.py layout sticker.png --perf-cut --perf-kp 53 --perf-dash 8 --out-dir ./output
+```
+
+Outputs in `--out-dir`:
+
+|File|Description|
+|---|---|
+|`layout.jpg`|Composite sticker sheet — pass to `send --jpg`|
+|`layout.plt`|Cut paths (kiss-cut + optional perf-cut) — pass to `send --plt`|
+|`layout_cut.svg`|SVG preview: kiss-cut in red, perf-cut in orange dashed|
+
+With `--paginate`, overflow sheets are written as `layout_1.*`, `layout_2.*`, etc.
+
+|Flag|Default|Description|
+|---|---|---|
+|`--dpi N`|300|Output resolution. A 300×300 px image at 300 DPI = 1×1 inch sticker.|
+|`--margin MM`|2.0|Outward offset of cut path from sticker edge in mm.|
+|`--padding MM`|3.0|Gap between sticker footprints on canvas in mm.|
+|`--left-margin MM`|0.0|Extra left paper margin in mm (shifts all cuts away from left edge).|
+|`--kp N`|42|Knife pressure for kiss-cut PLT output.|
+|`--repeat N`|1|Place each input image N times.|
+|`--bg-white`|—|Treat white pixels as transparent (JPEGs / white-bg PNGs).|
+|`--paginate`|—|Create extra sheets for overflow images.|
+|`--perf-cut`|—|Add dashed outer perf-cut contours at higher KP.|
+|`--perf-kp N`|53|Knife pressure for perf-cut lines.|
+|`--perf-dash MM`|8.0|Dash length in mm.|
+|`--perf-gap MM`|0.05|Gap between dashes in mm.|
+
+Then send to the printer:
+
+```zsh
+python3 pixcut_cli.py send --jpg output/layout.jpg --plt output/layout.plt
+```
+
+#### Perf-cut explained
+
+A perf-cut scores the backing paper in a dashed pattern along the kiss-cut line, letting stickers pop out cleanly by hand. The perf-cut runs at a higher knife pressure in alternating short bursts — the cut segments score through the backing while the gaps leave bridges that hold the sheet together. Liene does not support perf-cut in their official software, but the hardware is capable of it — this CLI generates the necessary PLT paths.
+
+- **Recommended settings**: `--perf-kp 53 --perf-dash 8 --perf-gap 0.05`
+- Verify with the SVG preview at actual size before cutting — kiss-cut contours appear in red.
+- Perf-cut scores through the backing paper, which will wear the cutting strip under the blade over time. That strip is not officially user-replaceable on the PixCut S1, but it can be replaced with a similarly-sized 8mm cutting strip (such as those sold for Graphtec/Roland cutters).
+
+---
+
+### convert (SVG → PLT offline)
+
+Converts SVG vector paths into the PixCut's HPGL-like PLT format. Supports color-coded perf-cut paths in the same SVG file.
+
+```zsh
+python3 pixcut_cli.py convert --svg input.svg --out output.plt --kp 42
+```
+
+Draw your kiss-cut paths in any color and your perf-cut paths with stroke color **`#ff8800`** (orange). The converter automatically separates them:
+
+- Kiss-cut paths → PLT at `--kp` (default 42)
+- Orange paths → PLT at `--perf-kp` (default 60) with dashed segments
+
+```zsh
+python3 pixcut_cli.py convert \
+  --svg my_design.svg \
+  --kp 42 \
+  --perf-kp 53 \
+  --perf-dash 8 \
+  --perf-gap 0.05
+```
+
+The same perf-cut flags work on `send --svg`.
+
+|Flag|Default|Description|
+|---|---|---|
+|`--kp N`|42|Kiss-cut knife pressure|
+|`--perf-color HEX`|`ff8800`|Stroke hex color marking perf-cut paths (set to `""` to disable)|
+|`--perf-kp N`|53|Perf-cut knife pressure|
+|`--perf-dash MM`|8.0|Dash length in mm|
+|`--perf-gap MM`|0.05|Gap between dashes in mm|
+
+Defaults (not user-tuned): DPI 96, units/inch 1016, rotate −90°, target 4×7 in. Translation offsets `--tx/--ty` available for manual nudging.
+
+---
+
+### query
+
+Ad-hoc single request.
+
+- Props: `python3 pixcut_cli.py query --props printer-state printer-sub-state`
+- Identity bundle: `--identity`
+- Job info: `--job-id 54`
+- Custom: `--method get-prop --params '["big-data"]'`
+- Repeat: `--repeat 5 --interval 2.0`
+
+---
+
+### probe (experimental/read-only by default)
+
+Sweeps common properties in batches and logs responses.
+
+```zsh
+python3 pixcut_cli.py probe
+python3 pixcut_cli.py probe --experimental        # add broader/less certain props
+python3 pixcut_cli.py probe --methods get-job-info --job-id 54
+```
+
+`--dangerous --set-prop key=value [...]` to send a `set-prop` mutation (example: `auto-off-interval=600`).
+
+---
+
+### printer (pause/resume)
+
+```zsh
+python3 pixcut_cli.py printer --pause
+python3 pixcut_cli.py printer --resume
+```
+
+---
+
+### scan
+
+```zsh
+python3 pixcut_cli.py scan
+```
+
+---
+
+### Progress & monitoring
+
+- Uploads log per-chunk progress with bytes/percent for PLT and JPG.
+- Poll loop logs concise state lines: job/printer state, print page, cut progress %, transfer %.
+- Final `big-data` fetched after completion.
+
+---
+
+## pixcut-kiosk (Web UI Server)
+
+**Files:** `server.py`, `static/`
+
+An optional local web server for building sticker sheets interactively — no command line required during a session. The CLI remains fully independent.
+
+**Platform note:** The kiosk is designed for **Raspberry Pi 4 or newer** running Raspberry Pi OS. A Pi 3B will struggle — Firefox is slow and Chromium won't launch on current Raspberry Pi OS. USB hot-plug detection works on Linux (`/media`, `/mnt`) and macOS (`/Volumes`).
+
+```bash
+python server.py
+# open http://localhost:8000 in a browser
+```
+
+![Kiosk UI](docs/screenshot.png)
+
+Two-panel layout:
+
+- **Left** — live JPEG preview of the 4×7″ canvas, updated after every change.
+- **Right** — scrollable sticker grid loaded from the `stickers/` folder. Click a sticker to add it; use +/− to set quantity; drag the slider (25%–200%) to resize.
+
+Controls:
+
+- **Clear Canvas** — remove all stickers.
+- **Print & Cut** — finalise the layout, send to the printer, and display a live status overlay (polling every 1.5 s).
+- **Overflow banner** — appears when stickers don't fit; reduce count or size.
+
+### Server options
+
+```bash
+python server.py [options]
+```
+
+Defaults are read from `server.json` in the project root. CLI flags always override the config file. Admin panel changes (knife pressure, margins, perf-cut settings, background image) are written back to `server.json` automatically.
+
+`server.json` keys:
+
+|Key|Default|Description|
+|---|---|---|
+|`host`|`"127.0.0.1"`|Bind address (`"0.0.0.0"` to expose on LAN)|
+|`port`|`8000`|HTTP port|
+|`stickers`|`"stickers"`|Path to stickers directory|
+|`backgrounds`|`"backgrounds"`|Path to backgrounds directory|
+|`dpi`|`300`|Layout resolution|
+|`margin_mm`|`1.0`|Cut margin outside sticker edge|
+|`padding_mm`|`2.0`|Gap between stickers on canvas|
+|`left_margin_mm`|`3.0`|Left paper margin|
+|`kp`|`42`|Knife pressure (1–100)|
+|`usb`|`true`|Enable USB drive sticker scanning|
+|`auto_detect`|`true`|Auto-detect printer VID/PID|
+|`vid`|`null`|Explicit USB Vendor ID hex string, e.g. `"0x302C"`|
+|`pid`|`null`|Explicit USB Product ID hex string, e.g. `"0x3101"`|
+|`perf_cut`|`false`|Enable perf-cut (pop-out lines)|
+|`perf_kp`|`53`|Perf-cut knife pressure|
+|`perf_dash_mm`|`8.0`|Perf-cut dash length (kiss-cut bridges)|
+|`perf_gap_mm`|`0.05`|Perf-cut gap length (full-cut segments)|
+|`bg_image`|`null`|Background image filename (from `backgrounds/`)|
+
+CLI flags (all correspond to the keys above):
+
+|Flag|Description|
+|---|---|
+|`--config`|Path to config file (default: `server.json`)|
+
+|`--host`|Bind address|
+|`--port`|HTTP port|
+|`--stickers DIR`|Stickers directory|
+|`--dpi N`|Layout resolution|
+|`--margin MM`|Cut margin in mm|
+|`--padding MM`|Gap between stickers in mm|
+|`--kp N`|Knife pressure|
+|`--left-margin MM`|Left paper margin in mm|
+|`--no-usb`|Disable USB drive scanning|
+|`--no-auto-detect`|Disable USB auto-detect|
+|`--vid / --pid`|Explicit USB VID/PID (hex)|
+
+### Sticker organisation
+
+The kiosk loads PNG files from the `stickers/` directory. Subfolders appear as section headers in the grid:
+
+```text
+stickers/
+  cat.png               # appears under no header (root)
+  dogs/
+    corgi.png           # appears under "dogs" header
+    poodle.png
+  2024-events/
+    kernelcon.png       # appears under "2024-events" header
+```
+
+USB drives are automatically scanned for PNG files and appear under a `USB: <label>` header. The grid refreshes automatically within 5 seconds of a drive being plugged or unplugged. Supported mount roots: `/media` and `/mnt` (Linux), `/Volumes` (macOS). Pass `--no-usb` to disable USB drive scanning entirely.
+
+### Background images
+
+Place background images (JPG or PNG) in `backgrounds/` under the project root. They are composited under the stickers in the print layer only — cut paths are unaffected.
+
+To change the active background: tap the title **5 times** to open the admin panel, then pick from the **Background Image** dropdown.
+
+The backgrounds directory is configurable:
+
+```bash
+python server.py --backgrounds /path/to/backgrounds
+```
+
+### Admin panel (secret: tap title 5× within 3 s)
+
+|Setting|Default|Description|
+|---|---|---|
+|Knife Pressure|42|Kiss-cut KP for all sticker outlines|
+|Cut Margin|1.0 mm|Outward offset of cut path from sticker edge|
+|Sticker Gap|2.0 mm|Gap between sticker footprints on canvas|
+|Left Paper Margin|3.0 mm|Extra margin to keep cuts off the left edge|
+|Background Image|None|Print-layer background (no cut path)|
+|Perf-Cut|off|Dashed scoring pattern along cut lines for easy pop-out|
+|Perf-Cut KP|53|Knife pressure for perf lines|
+|Dash Length|8.0 mm|Length of each perforated dash|
+|Gap Length|0.05 mm|Gap between dashes (kiss-cut bridges)|
+
+Export buttons: **JPEG Image** (print-ready composite), **SVG Cutlines** (cut path preview — kiss-cut in red), and **PLT File** (raw cutter instructions for debugging).
+
+### Network security
+
+The kiosk has no authentication. On untrusted networks (e.g. conference Wi-Fi) bind to localhost only:
+
+```bash
+# Bind to localhost only (edit the service file, then reload)
+sudo sed -i 's/--host [0-9.]*/--host 127.0.0.1/' /etc/systemd/system/pixcut-kiosk.service
+sudo systemctl daemon-reload && sudo systemctl restart pixcut-kiosk
+```
+
+To access the UI remotely when locked to localhost, SSH-tunnel it:
+
+```bash
+ssh -L 8000:localhost:8000 <PI_USER>@<PI_HOST>
+# then open http://localhost:8000 in your browser
+```
+
+---
+
+## Raspberry Pi Kiosk Deployment
+
+**Files:** `deploy.sh`, `deploy/99-pixcut.rules`, `deploy/pixcut-kiosk.service`
+
+Automates syncing and configuring the kiosk on a Pi over SSH.
+
+### First-time setup
+
+```bash
+# Defaults: host=raspberrypi.local  user=pi  (set PI_PASS env var if using sshpass)
+./deploy.sh
+
+# Override any value inline
+PI_HOST=mypi.local PI_USER=pi PI_PASS=yourpassword ./deploy.sh
+```
+
+The script:
+
+1. rsyncs the project (excluding `.venv/`, `__pycache__/`, etc.)
+2. Installs system packages (`python3-venv`, `libusb-1.0-0`)
+3. Installs udev rule + adds user to `plugdev`
+4. Creates `.venv` and installs all Python dependencies (including `shapely`)
+5. Installs and starts `pixcut-kiosk.service` (systemd)
+
+After deploy: `http://<PI_HOST>:8000`
+
+### Service management
+
+```bash
+ssh <PI_USER>@<PI_HOST>
+sudo systemctl status pixcut-kiosk
+journalctl -u pixcut-kiosk -f        # live logs
+sudo systemctl restart pixcut-kiosk
+```
+
+---
+
+## USB Protocol Reference
+
+`docs/pixcut-usb-protocol.md` documents the reverse-engineered USB wire format — JSON control messages, bulk data framing, endpoint layout, and observed property names. Useful if you want to extend the CLI, add new commands, or port the protocol to another language.
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for the full text.
+
+No affiliation with the vendor. Use at your own risk.

@@ -1,0 +1,16 @@
+{
+  "host": "127.0.0.1",
+  "port": 8000,
+  "stickers": "stickers",
+  "backgrounds": "backgrounds",
+  "margin_mm": 2.0,
+  "padding_mm": 2.0,
+  "left_margin_mm": 0.0,
+  "kp": 42,
+  "usb": true,
+  "perf_cut": false,
+  "perf_kp": 53,
+  "perf_dash_mm": 8.0,
+  "perf_gap_mm": 0.05,
+  "bg_image": null
+}

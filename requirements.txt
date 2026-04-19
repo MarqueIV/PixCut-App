@@ -1,0 +1,10 @@
+pyusb>=1.2.1
+svgpathtools>=1.5.1
+svgelements>=1.1.0
+
+# Required for `layout` command (auto-cutline generation)
+Pillow>=10.0
+scikit-image>=0.20
+
+# Optional for `layout` command: accurate margin/buffer around sticker outlines
+# pip install shapely
