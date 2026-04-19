@@ -372,7 +372,7 @@ function folderLabel(folder) {
     const parts = folder.split("/");
     const usbLabel = parts[1];
     const sub = parts.slice(2).join(" / ");
-    return sub ? `${usbLabel} / ${sub}` : `${usbLabel}`;
+    return sub ? `USB: ${usbLabel} / ${sub}` : `USB: ${usbLabel}`;
   }
   return folder.split("/").join(" / ");
 }

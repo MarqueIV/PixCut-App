@@ -7,6 +7,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    import colorama
+    colorama.just_fix_windows_console()
+except ImportError:
+    pass
+
+# ANSI color helpers for print() output.
+# Codes are empty strings when stdout is not a TTY (file redirection, pipes).
+_TTY = sys.stdout.isatty()
+CLR_RESET  = "\033[0m"  if _TTY else ""
+CLR_GREEN  = "\033[32m" if _TTY else ""
+CLR_YELLOW = "\033[33m" if _TTY else ""
+CLR_CYAN   = "\033[36m" if _TTY else ""
+CLR_RED    = "\033[31m" if _TTY else ""
+CLR_BOLD   = "\033[1m"  if _TTY else ""
+
 
 def default_log_dir(prefix: str = "run-logs") -> Path:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -15,11 +31,11 @@ def default_log_dir(prefix: str = "run-logs") -> Path:
 
 class ColorFormatter(logging.Formatter):
     COLORS = {
-        logging.DEBUG: "\033[36m",   # cyan
-        logging.INFO: "\033[37m",    # light gray
-        logging.WARNING: "\033[33m", # yellow
-        logging.ERROR: "\033[31m",   # red
-        logging.CRITICAL: "\033[41m" # red background
+        logging.DEBUG:    "\033[36m",    # cyan
+        logging.INFO:     "",            # default terminal color
+        logging.WARNING:  "\033[33m",    # yellow
+        logging.ERROR:    "\033[31m",    # red
+        logging.CRITICAL: "\033[1;31m",  # bold red
     }
     RESET = "\033[0m"
 
@@ -30,9 +46,14 @@ class ColorFormatter(logging.Formatter):
         return f"{color}{msg}{reset}"
 
 
+_logging_configured = False
+
+
 def ensure_logging(level: int = logging.INFO, *, verbose: bool = True, logfile: Optional[Path] = None) -> None:
-    if logging.getLogger().handlers:
+    global _logging_configured
+    if _logging_configured:
         return
+    _logging_configured = True
     handlers = []
     console = logging.StreamHandler(sys.stdout)
     if verbose:
@@ -45,7 +66,7 @@ def ensure_logging(level: int = logging.INFO, *, verbose: bool = True, logfile: 
         fh = logging.FileHandler(logfile, encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
         handlers.append(fh)
-    logging.basicConfig(level=level, handlers=handlers)
+    logging.basicConfig(force=True, level=level, handlers=handlers)
 
 
 def hexdump(data: bytes, width: int = 16) -> str:

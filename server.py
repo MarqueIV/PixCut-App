@@ -25,6 +25,12 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+try:
+    import colorama
+    colorama.just_fix_windows_console()
+except ImportError:
+    pass
+
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware

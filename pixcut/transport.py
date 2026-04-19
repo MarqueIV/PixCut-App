@@ -7,6 +7,55 @@ from typing import Optional
 import usb.core
 import usb.util
 
+try:
+    import libusb_package as _libusb_package
+except ImportError:
+    _libusb_package = None
+
+
+def _usb_backend():
+    if sys.platform != "win32":
+        # Mac/Linux: let pyusb auto-detect the system libusb.
+        return None
+
+    import os as _os
+    import usb.backend.libusb1 as _lb1
+
+    def _try_path(path):
+        p = str(path)
+        if _os.path.exists(p):
+            b = _lb1.get_backend(find_library=lambda x: p)
+            if b is not None:
+                return b
+        return None
+
+    # 1. libusb-package bundled DLL. get_library_path() is safe on all Python
+    #    versions; get_libusb1_backend() crashes on 3.14 when no DLL is bundled.
+    #    libusb-package ships DLL wheels for Python 3.7-3.13 only; on 3.14+ the
+    #    wheel is empty so get_library_path() returns None and we fall through.
+    if _libusb_package is not None:
+        try:
+            lib_path = _libusb_package.get_library_path()
+            if lib_path is not None:
+                b = _try_path(lib_path)
+                if b:
+                    return b
+        except Exception:
+            pass
+
+    # 2. DLL placed here by scripts/install_libusb_windows.py (Python 3.14+).
+    pkg_dir = _os.path.dirname(_os.path.abspath(__file__))
+    b = _try_path(_os.path.join(pkg_dir, "libusb-1.0.dll"))
+    if b:
+        return b
+
+    # 3. venv Scripts dir (user may have placed the DLL there manually).
+    b = _try_path(_os.path.join(_os.path.dirname(sys.executable), "libusb-1.0.dll"))
+    if b:
+        return b
+
+    return None
+
 log = logging.getLogger("pixcut.transport")
 
 # Default timeout is generous to avoid spurious bulk timeouts on slow phases.
@@ -28,21 +77,11 @@ class USBConfig:
 
 def _backend_error_help() -> str:
     if sys.platform == "win32":
-        arch = platform.machine()
-        is_64 = sys.maxsize > 2**32
-        py_arch = "64-bit" if is_64 else "32-bit"
         return (
-            f"USB backend not found.\n"
-            f"  System: {arch}\n"
-            f"  Python Process: {py_arch}\n"
-            "Setup required:\n"
-            "1. Download 'libusb-1.0.dll'.\n"
-            "2. Place it in the same folder as this script (or C:\\Windows\\System32).\n"
-            "3. IMPORTANT: The DLL architecture must match the Python process.\n"
-            "   - If Python is ARM64, use an ARM64 build of libusb-1.0.dll.\n"
-            "   - If Python is x64 (AMD64), use an x64 build.\n"
-            "   - If Python is x86 (32-bit), use an x86 build.\n"
-            "4. Ensure the device driver is 'WinUSB' (via Zadig)."
+            "USB backend not found.\n"
+            "Your Python version may not yet have a bundled libusb wheel.\n"
+            "See 'Windows USB troubleshooting' in README.md for how to\n"
+            "install libusb-1.0.dll manually."
         )
     return "USB backend not found (check libusb installation)."
 
@@ -60,7 +99,7 @@ class USBTransport:
 
     def open(self) -> None:
         try:
-            dev = usb.core.find(idVendor=self.cfg.vid, idProduct=self.cfg.pid)
+            dev = usb.core.find(idVendor=self.cfg.vid, idProduct=self.cfg.pid, backend=_usb_backend())
         except usb.core.NoBackendError:
             raise RuntimeError(_backend_error_help())
         if dev is None:
@@ -225,7 +264,7 @@ def discover_pixcut(
     """
     matches = []
     try:
-        devices = list(usb.core.find(find_all=True))
+        devices = list(usb.core.find(find_all=True, backend=_usb_backend()))
     except usb.core.NoBackendError:
         raise RuntimeError(_backend_error_help())
 
@@ -307,7 +346,7 @@ def list_all_devices():
     is_pixcut is True when the VID/PID matches a known PixCut device.
     """
     try:
-        devices = list(usb.core.find(find_all=True))
+        devices = list(usb.core.find(find_all=True, backend=_usb_backend()))
     except usb.core.NoBackendError:
         yield (0, 0, _backend_error_help(), False)
         return

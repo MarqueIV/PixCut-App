@@ -7,7 +7,10 @@ from typing import Optional
 from textwrap import dedent
 import json as jsonlib
 
-from .logging_utils import SessionLogger, default_log_dir, ensure_logging
+from .logging_utils import (
+    SessionLogger, default_log_dir, ensure_logging,
+    CLR_RESET, CLR_GREEN, CLR_YELLOW, CLR_CYAN, CLR_BOLD,
+)
 from .orchestrator import JobConfig, PixcutClient, run_job_session
 from .transport import USBConfig, USBTransport, discover_pixcut, list_all_devices
 from .svg_to_plt import convert_svg_to_plt, save_plt
@@ -198,7 +201,7 @@ def cmd_send(args: argparse.Namespace) -> None:
         return
     if args.verbose:
         logger.log_text_block("final result", json.dumps(result, indent=2), log)
-        print(f"done. logs at {logger.describe()}")
+        print(f"{CLR_GREEN}done.{CLR_RESET} logs at {logger.describe()}")
     else:
         if result.get("error"):
             log.error("\033[31mJob error: %s\033[0m", result.get("error"))
@@ -265,19 +268,20 @@ def cmd_query(args: argparse.Namespace) -> None:
 
 
 def cmd_scan(args: argparse.Namespace) -> None:
+    ensure_logging(verbose=False)
     print("Scanning USB bus for PixCut devices...")
     pixcut_found = False
     other_count = 0
     for vid, pid, description, is_pixcut in list_all_devices():
         if is_pixcut:
             pixcut_found = True
-            print(f"  [PIXCUT]  vid=0x{vid:04x} pid=0x{pid:04x}  {description}")
+            print(f"  {CLR_BOLD}{CLR_CYAN}[PIXCUT]{CLR_RESET}  vid=0x{vid:04x} pid=0x{pid:04x}  {description}")
         else:
             other_count += 1
     if pixcut_found:
         print(f"  ({other_count} other USB device(s) not shown)")
     else:
-        print(f"  No PixCut device found ({other_count} other USB device(s) present).")
+        print(f"  {CLR_YELLOW}No PixCut device found{CLR_RESET} ({other_count} other USB device(s) present).")
         print("  Check that the printer is powered on and connected, and that libusb can see it.")
 
 
@@ -322,7 +326,7 @@ def cmd_convert(args: argparse.Namespace) -> None:
         perf_gap_mm=args.perf_gap,
     )
     save_plt(plt_text, out_path)
-    print(f"wrote PLT to {out_path}")
+    print(f"{CLR_GREEN}wrote PLT to{CLR_RESET} {out_path}")
 
 
 def cmd_layout(args: argparse.Namespace) -> None:
@@ -487,7 +491,7 @@ def cmd_probe(args: argparse.Namespace) -> None:
     finally:
         client.close()
     if args.verbose:
-        print(f"done. logs at {logger.describe()}")
+        print(f"{CLR_GREEN}done.{CLR_RESET} logs at {logger.describe()}")
 
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
@@ -829,9 +833,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list] = None) -> None:
+    import sys
     parser = build_parser()
     args = parser.parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        sys.exit(0)
+    except Exception as exc:
+        ensure_logging(verbose=False)
+        log.error("%s", exc)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

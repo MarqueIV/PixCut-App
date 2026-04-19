@@ -18,35 +18,63 @@ If you just want to drive the printer from a Mac or PC, you only need the CLI. T
 
 ## Install
 
+### macOS
+
 ```bash
+brew install libusb
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-server.txt   # optional, to run the GUI/kiosk server on this machine
 ```
 
-System deps:
-
-- **macOS**: `brew install libusb`
-- **Windows**: Windows is untested currently, but you will likely need the WinUSB driver via Zadig + matching `libusb-1.0.dll` in PATH.
-- **Linux (Raspberry Pi etc.)**: copy the included udev rule so the printer is accessible without root:
-
-  ```bash
-  sudo cp deploy/99-pixcut.rules /etc/udev/rules.d/
-  sudo udevadm control --reload-rules && sudo udevadm trigger
-  sudo usermod -aG plugdev $USER   # log out and back in after this
-  ```
-
-The `layout` command and kiosk UI require additional packages:
+### Linux / Raspberry Pi
 
 ```bash
-pip install Pillow scikit-image
-pip install shapely   # optional but recommended — accurate margin offsets for complex shapes
+sudo apt-get install -y libusb-1.0-0
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pip install -r requirements-server.txt   # optional, to run the GUI/kiosk server on this machine
 ```
 
-The kiosk server requires:
+For non-root USB access, install the included udev rule (required unless you run as root):
 
 ```bash
-pip install -r requirements-server.txt   # fastapi, uvicorn
+sudo cp deploy/99-pixcut.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG plugdev $USER   # log out and back in after this
 ```
+
+### Windows
+
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+pip install -r requirements-server.txt   # optional, to run the GUI/kiosk server on this machine
+```
+
+`libusb-package` (included in `requirements.txt`) bundles the USB backend automatically for most Python versions — no extra steps needed. If you see **"USB backend not found"**, see [Windows USB troubleshooting](#windows-usb-troubleshooting) below.
+
+### Windows USB troubleshooting
+
+`libusb-package` has a release lag — newly released Python versions may not yet have a bundled-DLL wheel, so `pip install` succeeds but the USB backend is missing. If you see **"USB backend not found"**:
+
+1. Download the latest Windows binary from [github.com/libusb/libusb/releases](https://github.com/libusb/libusb/releases) — get the `.7z` archive (requires [7-Zip](https://www.7-zip.org/) to open).
+2. Extract the DLL matching your Python installation:
+
+   | Python | DLL path inside the archive |
+   | --- | --- |
+   | 64-bit (most common) | `VS2022\MS64\dll\libusb-1.0.dll` |
+   | 32-bit | `VS2022\MS32\dll\libusb-1.0.dll` |
+   | ARM64 | `VS2022\ARM64\dll\libusb-1.0.dll` |
+
+   Not sure which you have? Run: `python -c "import struct; print(struct.calcsize('P')*8, 'bit')"`
+
+3. Place `libusb-1.0.dll` in the `pixcut\` folder inside this project.
+
+Once `libusb-package` ships a wheel for your Python version, a fresh `pip install -r requirements.txt` will pick it up and you can remove the manual DLL.
+
+**Zadig note:** If you have never installed Liene's official software, Windows has no driver bound to the device and libusb claims it automatically — no extra steps needed. If you have the Liene app installed, you may need [Zadig](https://zadig.akeo.ie/) to rebind the device driver to WinUSB.
 
 ## Example files
 
@@ -251,7 +279,7 @@ Ad-hoc single request.
 - Props: `python3 pixcut_cli.py query --props printer-state printer-sub-state`
 - Identity bundle: `--identity`
 - Job info: `--job-id 54`
-- Custom: `--method get-prop --params '["big-data"]'`
+- Custom: `--method get-prop --params '["big-data"]'` — on Windows cmd.exe use double quotes: `--params "[\"big-data\"]"` (PowerShell accepts single quotes as-is)
 - Repeat: `--repeat 5 --interval 2.0`
 
 ---
@@ -435,7 +463,7 @@ ssh -L 8000:localhost:8000 <PI_USER>@<PI_HOST>
 
 ## Raspberry Pi Kiosk Deployment
 
-**Files:** `deploy.sh`, `deploy/99-pixcut.rules`, `deploy/pixcut-kiosk.service`
+**Files:** `deploy.sh`, `deploy/99-pixcut.rules`, `deploy/pixcut-kiosk.service`, `deploy/launch-kiosk.sh`
 
 Automates syncing and configuring the kiosk on a Pi over SSH.
 
@@ -452,12 +480,32 @@ PI_HOST=mypi.local PI_USER=pi PI_PASS=yourpassword ./deploy.sh
 The script:
 
 1. rsyncs the project (excluding `.venv/`, `__pycache__/`, etc.)
-2. Installs system packages (`python3-venv`, `libusb-1.0-0`)
+2. Installs system packages (`python3-venv`, `libusb-1.0-0`, `chromium`)
 3. Installs udev rule + adds user to `plugdev`
-4. Creates `.venv` and installs all Python dependencies (including `shapely`)
+4. Creates `.venv` and installs all Python dependencies
 5. Installs and starts `pixcut-kiosk.service` (systemd)
+6. Prompts whether to auto-launch Chromium at desktop login (see below)
 
 After deploy: `http://<PI_HOST>:8000`
+
+### Chromium kiosk browser
+
+`deploy/launch-kiosk.sh` opens Chromium fullscreen pointing at the kiosk UI. The deploy script will ask:
+
+> Auto-launch Chromium at desktop login? [y/N]
+
+- **Y** — writes an XDG autostart entry (`~/.config/autostart/pixcut-kiosk-browser.desktop`). Chromium opens automatically whenever the desktop loads. **Only enable this on a dedicated touchscreen display** — kiosk mode is fullscreen with no browser chrome, and without a keyboard/mouse there is no way to exit.
+- **N** — creates a `PixCut-Kiosk` desktop icon instead. Double-tap it to open the browser manually.
+
+To change this after deploy, re-run `deploy.sh` and answer differently, or manage the autostart file directly:
+
+```bash
+# Remove autostart (revert to manual desktop icon)
+rm ~/.config/autostart/pixcut-kiosk-browser.desktop
+
+# Launch manually at any time
+~/pixcut-app/deploy/launch-kiosk.sh
+```
 
 ### Service management
 
