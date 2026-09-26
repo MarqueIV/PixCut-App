@@ -2,6 +2,26 @@
 
 Python toolset to control the Liene PixCut S1 over USB bulk endpoints.
 
+---
+
+### Want a full Mac/Windows GUI instead?
+
+**[StixCut](https://stixcut.com/)** is my full-featured desktop app for the Liene PixCut S1. It adds a polished visual workflow with drag-and-drop sheet layout, Auto-Pack, editable and SVG cutlines, contour perf-cut + peel tabs, material profiles, on-device background removal, multi-printer support, and USB + Bluetooth connectivity.
+
+**StixCut is free for light use** and available for both macOS and Windows.
+
+<p align="center">
+  <a href="https://stixcut.com/">
+    <img src="https://stixcut.com/assets/screenshots/hero.png" alt="StixCut — Layout. Print. Cut." width="900">
+  </a>
+</p>
+
+<p align="center"><strong><a href="https://stixcut.com/">Get StixCut for macOS or Windows →</a></strong></p>
+
+> StixCut is a separate application and its source code is not part of this repository. PixCut CLI + Kiosk remains the open-source toolkit documented below.
+
+---
+
 ![PixCut CLI](docs/cli.png)
 
 ## Overview
