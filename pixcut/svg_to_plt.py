@@ -194,6 +194,16 @@ def _dash_polyline(
     return segments
 
 
+def _pressure_switch_reset_commands(start: Point, nudge_u: float) -> List[str]:
+    """Blade-up travel that makes a subsequent KP change reliably reseat."""
+    x, y = start
+    return [
+        f"U{round(x)},{round(y)}",
+        f"U{round(x + nudge_u)},{round(y)}",
+        f"U{round(x)},{round(y)}",
+    ]
+
+
 def _plt_path_commands(
     polylines: List[List[Point]],
     dash_u: float = 0.0,
@@ -205,33 +215,50 @@ def _plt_path_commands(
     """
     Return PLT command tokens for a list of polylines.
 
-    dash_u/gap_u > 0: segment into alternating draw/lift pieces (perf-cut dash mode).
+    dash_u/gap_u > 0 segments a path by arc length.
 
-    dash_kp/gap_kp both set: pressure mode — single pass along the perf path with
-    alternating knife pressure. Each segment is its own sub-path (KP then U then D).
-    nudge_u: small X offset added to the U coordinate so the firmware sees real travel
-    and doesn't optimise the lift away. The first D of the next segment returns to the
-    true shared endpoint, leaving an imperceptible mark on the cutter.
+    With dash_kp/gap_kp set, segments alternate pressure (used by the layout
+    perf-cut mode). Without pressure values, draw segments use D commands and
+    gap segments use blade-up U moves.
+
+    When pressure changes, a small blade-up nudge/return is emitted before the
+    new KP command so the next U/D sequence reliably reseats the blade.
     """
     parts: List[str] = []
+    current_kp: Optional[int] = None
+
     for pts in polylines:
         if not pts:
             continue
+
         if dash_u > 0 and gap_u > 0:
             for is_draw, seg in _dash_polyline(pts, dash_u, gap_u):
-                # Each segment is its own sub-path. KP before U so the new
-                # pressure is applied when the knife re-seats on the first D.
-                # nudge_u shifts the U slightly so the firmware registers real travel.
-                parts.append(f"KP{dash_kp if is_draw else gap_kp}")
-                parts.append(f"U{round(seg[0][0] + nudge_u)},{round(seg[0][1])}")
-                for x, y in seg[1:]:
-                    parts.append(f"D{round(x)},{round(y)}")
+                if not seg:
+                    continue
+
+                if dash_kp is not None and gap_kp is not None:
+                    next_kp = dash_kp if is_draw else gap_kp
+                    if next_kp != current_kp:
+                        if current_kp is not None and nudge_u > 0:
+                            parts.extend(_pressure_switch_reset_commands(seg[0], nudge_u))
+                        parts.append(f"KP{next_kp}")
+                        current_kp = next_kp
+                    parts.append(f"U{round(seg[0][0])},{round(seg[0][1])}")
+                    for x, y in seg[1:]:
+                        parts.append(f"D{round(x)},{round(y)}")
+                elif is_draw:
+                    parts.append(f"U{round(seg[0][0])},{round(seg[0][1])}")
+                    for x, y in seg[1:]:
+                        parts.append(f"D{round(x)},{round(y)}")
+                else:
+                    # Move blade-up across the bridge/gap to the segment end.
+                    x, y = seg[-1]
+                    parts.append(f"U{round(x)},{round(y)}")
         else:
             parts.append(f"U{round(pts[0][0])},{round(pts[0][1])}")
             for x, y in pts:
                 parts.append(f"D{round(x)},{round(y)}")
     return parts
-
 
 def points_to_plt(polylines: List[List[Point]], kp: int = DEFAULT_KP) -> str:
     parts = ["IN", "VER0.1.0", f"KP{kp}"]
@@ -256,7 +283,7 @@ def convert_svg_to_plt(
     translate_x: float = 0.0,
     translate_y: float = 0.0,
     perf_cut_color: str = PERF_CUT_COLOR,
-    perf_knife_pressure: int = 60,
+    perf_knife_pressure: int = 53,
     perf_dash_mm: float = 8.0,
     perf_gap_mm: float = 0.05,
 ) -> str:
@@ -381,6 +408,11 @@ def convert_svg_to_plt(
         units_per_mm = units_per_inch / MM_PER_INCH
         dash_u = perf_dash_mm * units_per_mm
         gap_u = perf_gap_mm * units_per_mm
+        if kiss_polys and perf_knife_pressure != knife_pressure and perf_polys[0]:
+            plt_parts += _pressure_switch_reset_commands(
+                perf_polys[0][0],
+                0.1 * units_per_mm,
+            )
         plt_parts.append(f"KP{perf_knife_pressure}")
         plt_parts += _plt_path_commands(perf_polys, dash_u, gap_u)
     plt_parts.append(" U6476,0 @ ")
