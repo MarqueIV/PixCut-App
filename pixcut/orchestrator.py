@@ -116,7 +116,9 @@ def _extract_alert_codes(alerts) -> set:
     for val in candidates:
         # Try direct integer conversion first.
         try:
-            codes.add(int(val))
+            n = int(val)
+            if n > 0:
+                codes.add(n)
             continue
         except (TypeError, ValueError):
             pass
@@ -228,6 +230,27 @@ def _extract_job_ids(value) -> list[int]:
     add(value)
     # Preserve device order while removing duplicates.
     return list(dict.fromkeys(ids))
+
+
+def _extract_error_code(value) -> Optional[int]:
+    """Find an error-code in the response shapes used by job creation."""
+    if isinstance(value, dict):
+        if "error-code" in value:
+            try:
+                return int(value["error-code"])
+            except (TypeError, ValueError):
+                return None
+        for key in ("result", "info"):
+            if key in value:
+                code = _extract_error_code(value[key])
+                if code is not None:
+                    return code
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            code = _extract_error_code(item)
+            if code is not None:
+                return code
+    return None
 
 
 PRINTER_RASTER_SIZES = {
@@ -465,8 +488,6 @@ class PixcutClient:
                         if resp_obj.get("method") == "event.rpt_err":
                             log.error("device error event: %s", resp_obj)
                             return resp_obj
-                        if not self.verbose and quiet:
-                            continue
                         if resp_obj.get("id") == self.ids.get("last_req_id"):
                             return resp_obj
                 if time.time() - start > 10:
@@ -712,18 +733,20 @@ class PixcutClient:
         if not resp or "result" not in resp:
             raise RuntimeError(f"combo-job failed: {resp}")
         result = resp["result"]
-        # Device may reject the job immediately with an error-code instead of a job_id.
-        if isinstance(result, dict) and "error-code" in result and "job_id" not in result:
-            ec = result["error-code"]
-            desc = PRINTER_ERROR_CODES.get(int(ec), "") if ec is not None else ""
-            msg = f"printer rejected job (error-code={ec})"
+        job_ids = _extract_job_ids(result)
+        error_code = _extract_error_code(result)
+
+        # The device can reject a job with an error-code instead of a job_id.
+        if error_code is not None and not job_ids:
+            desc = PRINTER_ERROR_CODES.get(error_code, "")
+            msg = f"printer rejected job (error-code={error_code})"
             if desc:
                 msg += f": {desc}"
             raise RuntimeError(msg)
-        job_id = result.get("job_id") if isinstance(result, dict) else result[0].get("job_id")
-        if job_id is None:
+
+        if not job_ids:
             raise RuntimeError(f"no job_id in response: {resp}")
-        return job_id
+        return job_ids[0]
 
     def upload_documents(self, payloads: Dict[str, bytes], job_id: Optional[int] = None) -> None:
         # Upload PLT first (matches observed order), then JPG.
