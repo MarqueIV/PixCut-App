@@ -143,6 +143,7 @@ Open `examples/sticker-sheet-template.af` (Affinity Designer) or `examples/stick
 - `probe`   — batched property sweep + optional experimental methods; optional `set-prop` (guarded).
 - `printer` — send `pause-printer` or `resume-printer`.
 - `scan`    — list visible USB devices, highlighting PixCut devices.
+- `job`     — list active printer jobs or cancel one by job ID.
 
 All commands share USB flags: `--vid/--pid --interface --out-ep --in-ep --data-interface --data-out-ep --data-in-ep --timeout-ms --auto-detect/--no-auto-detect`.
 Use `--verbose` to enable per-session file logging (see [Logging](#logging) below).
@@ -166,7 +167,7 @@ python3 pixcut_cli.py send \
   --mode combo \
   --jpg photo.jpg \
   --plt path.plt \
-  --media-size 5313 --media-type 2030 \
+  --media-size 5013 --media-type 2030 \
   --copies 1 --quality 4 \
   --channel 14864 \
   --kp 42
@@ -190,7 +191,7 @@ Key options:
 - `--extlen` (default 4075) chunk size.
 - `--ack-timeout` per-chunk ACK wait (seconds).
 - `--heartbeat-interval` (default 5s) background get-prop pings.
-- `--poll-interval` (default 10s) job status polling after upload.
+- `--poll-interval` (default 2s) job status polling after upload.
 - `--max-poll-seconds` overall poll timeout (0 = unlimited).
 - `--id-strategy {monotonic,fixed}`: monotonic (default) uses ever-increasing ids; fixed mimics captured ids.
 - `--interface`: If auto-detect fails, set endpoints explicitly, e.g. `--interface 2 --out-ep 0x06 --in-ep 0x86 --data-interface 3 --data-out-ep 0x04 --data-in-ep 0x84`.
@@ -198,6 +199,7 @@ Key options:
 Constraints:
 
 - JPG must be ≤ 1 MiB (device limit).
+- For standard 300-DPI media, PixCut automatically applies the printer's registration raster: 4×7 logical 1200×2100 is padded to 1216×2128 (8 px left/right, 14 px top/bottom). Already-padded files are left unchanged.
 
 ---
 
@@ -271,7 +273,7 @@ python3 pixcut_cli.py convert --svg input.svg --out output.plt --kp 42
 Draw your kiss-cut paths in any color and your perf-cut paths with stroke color **`#ff8800`** (orange). The converter automatically separates them:
 
 - Kiss-cut paths → PLT at `--kp` (default 42)
-- Orange paths → PLT at `--perf-kp` (default 60) with dashed segments
+- Orange paths → PLT at `--perf-kp` (default 53) with dashed segments
 
 ```zsh
 python3 pixcut_cli.py convert \
@@ -331,10 +333,31 @@ python3 pixcut_cli.py printer --resume
 
 ---
 
+### job (list/cancel)
+
+```zsh
+python3 pixcut_cli.py job --list
+python3 pixcut_cli.py job --cancel 42
+```
+
+The send loop also uses `get-job-id-list` automatically to recover if a job ID becomes stale after repeated status-query timeouts. Ctrl-C during an active send attempts `cancel-job` before closing USB.
+
+---
+
 ### scan
 
 ```zsh
 python3 pixcut_cli.py scan
+```
+
+---
+
+### Tests
+
+Protocol/engine regressions use the standard library test runner:
+
+```zsh
+python3 -m unittest discover -s tests
 ```
 
 ---
