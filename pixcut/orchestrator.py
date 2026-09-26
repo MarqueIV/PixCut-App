@@ -6,7 +6,7 @@ import time
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 import hashlib
 import io
 
@@ -197,9 +197,9 @@ def _describe_error_sub_state(value) -> str:
     return ERROR_SUB_STATE_CODES.get(_int_value(value), "")
 
 
-def _extract_job_ids(value) -> list[int]:
+def _extract_job_ids(value) -> List[int]:
     """Extract positive job IDs from the response shapes seen from get-job-id-list."""
-    ids: list[int] = []
+    ids: List[int] = []
 
     def add(v) -> None:
         if v is None:
@@ -770,7 +770,7 @@ class PixcutClient:
                 job_id=job_id,
             )
 
-    def get_job_ids(self) -> list[int]:
+    def get_job_ids(self) -> List[int]:
         resp = self._send_json(
             {"method": "get-job-id-list", "params": {}},
             expect_response=True,
