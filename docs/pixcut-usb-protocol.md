@@ -179,6 +179,30 @@ Working theory: `transfer-size` includes additional transferred artifacts (e.g.,
 
 Measured cut dimensions (~42.5–43 mm for nominal 40 mm art with border) are consistent with a 1016 units/inch internal coordinate grid when accounting for cutter compensation and border logic.
 
+
+### 4.4 Print Raster Geometry and Registration (Confirmed)
+
+The printer's logical 4x7 print content is 1200 x 2100 pixels at 300 DPI, but the JPEG sent to the device must be **1216 x 2128 pixels** for accurate print/cut registration.
+
+Working host implementations render the logical 1200 x 2100 sheet first, then place it unchanged inside a white raster with:
+
+- **8 pixels left and right**
+- **14 pixels top and bottom**
+- final size: **1216 x 2128**
+
+For 4x6 print-only media the same rule produces 1216 x 1828 from a 1200 x 1800 logical page.
+
+Sending the unpadded 1200 x 2100 image causes the firmware to scale it into its 1216 x 2128 raster space. That implicit scale is about 1.01333x and produces a measurable print-to-cut registration error because the PLT coordinate system is not scaled the same way.
+
+This explains the offsets in the host-side pixel-to-PLT formula documented later:
+
+```text
+plt_x = (pixel_y * 1.01333 - 14.0) * 3.3866668
+plt_y = (pixel_x * 1.01333 -  8.0) * 3.3866668
+```
+
+The preferred host implementation is **not** to bake those offsets into every cut coordinate. Keep the logical print and cut geometry in the nominal sheet coordinate system, pad only the outgoing JPEG raster, and generate PLT coordinates from the unpadded logical sheet.
+
 ---
 
 ## 5. JSON Methods and Response Models (Observed)
@@ -410,7 +434,92 @@ Observed media-size codes (mapping to physical media TBD):
 
 ---
 
-### 5.5 `upgrade-firmware`
+### 5.5 Job Control and Queue Commands
+
+These methods have moved beyond firmware-string speculation and are used by the current working host implementation.
+
+#### `cancel-job`
+
+Cancels the active or queued job identified by job id.
+
+USB request:
+
+```json
+{
+  "id": 123,
+  "method": "cancel-job",
+  "params": {
+    "job-id": 42
+  }
+}
+```
+
+Useful follow-up states:
+
+| Field | Value | Meaning |
+| --- | ---: | --- |
+| `printer-sub-state` | `3006` | Cancelling |
+| `job-state` | `8` | Cancelled |
+| `job-state` | `7` with `job-sub-state=7000` | Aborted |
+
+After cancellation, continue querying `get-prop` / `get-job-info` until the device reaches a terminal state or returns to idle.
+
+#### `confirm_job` / `confirm-job`
+
+Print-only jobs require an explicit confirmation after the JPEG upload before physical printing begins. The currently working host implementation sends:
+
+```json
+{
+  "id": 124,
+  "method": "confirm_job",
+  "params": {
+    "job-id": 42
+  }
+}
+```
+
+Firmware/source evidence contains both underscore and dash spellings. The underscore form above is used by the working print-only path. Do not change dialect casually without testing.
+
+Combo print+cut jobs do not use this confirmation step.
+
+#### `get-job-id-list`
+
+Returns active printer job ids and is useful when a previously assigned job id becomes stale or `get-job-info` repeatedly times out.
+
+Request:
+
+```json
+{
+  "id": 125,
+  "method": "get-job-id-list",
+  "params": {}
+}
+```
+
+Observed/handled response shapes vary. Robust clients should accept a positive id from:
+
+- a scalar integer or numeric string
+- an array containing ids
+- an object containing `job-id-list`, `job_id_list`, `job-id`, `job_id`, or nested `result`
+- semicolon-separated numeric strings
+
+A recovery strategy that works well is: after repeated `get-job-info` timeouts, query `get-job-id-list`; if the printer reports a different active id, adopt it and resume polling that job.
+
+#### `resume-printer`
+
+Present in firmware/source evidence and used by related implementations:
+
+```json
+{"id":126,"method":"resume-printer","params":[]}
+```
+
+Its exact recovery semantics remain less well characterized than the job-control methods above.
+
+#### `pause-printer`
+
+The legacy CLI exposes `pause-printer`, but the firmware method table reviewed during reverse engineering did not contain it. Treat it as unverified and do not depend on it for job control.
+
+### 5.6 `upgrade-firmware`
 
 Upgrades device firmware (untested)
 
@@ -422,7 +531,7 @@ Assumption is that cmd data would send the rbn file, but this is untested.
 
 ---
 
-## 5.6 Additional constants from Bluetooth protocol (helpful on USB)
+### 5.7 Additional constants from Bluetooth protocol (helpful on USB)
 
 - **Document format codes:** JPG=9, PNG=10, BMP=11, PLT=18.
 - **Media:** 5012 = photo 4x6; 5013 = sticker 4x7. Media-type 2010 = photo 4x6; 2030 = sticker 4x7.
@@ -433,7 +542,7 @@ Assumption is that cmd data would send the rbn file, but this is untested.
 
 ---
 
-### 5.5 Field Glossary (Protocol vs App Telemetry)
+### 5.8 Field Glossary (Protocol vs App Telemetry)
 
 The official app binaries contain many strings that are **not** device protocol fields (e.g., analytics keys, platform metadata). Use this as a quick discriminator when mining strings.
 
@@ -460,7 +569,7 @@ The presence of these strings suggests internal processing knobs in the app; tre
 
 ---
 
-### 5.7 Device-Initiated Events
+### 5.9 Device-Initiated Events
 
 In addition to responding to requests, the device can push event notifications. These have been observed over Bluetooth; USB behavior is not yet confirmed but is expected to be the same.
 
@@ -498,41 +607,144 @@ Called upon completing a combo (print+cut) job. Same fields as `event.print-job-
 | `3` | Processing | Appears as numeric `job-state` in BT `get-job-info` |
 | `9` | Completed | Appears as numeric `job-state` in BT `get-job-info` |
 
-### 6.2 `printer-sub-state` (string; partial mapping)
+### 6.2 `printer-sub-state` (string on USB)
 
-Idle baseline:
+The following mapping combines observed sessions with firmware/source enum work and current host behavior:
 
-- `"2000"` (observed while `printer-state="20"`)
+| Code | Meaning |
+| ---: | --- |
+| 1000 | Initializing |
+| 2000 | Idle |
+| 3001 | Printing |
+| 3002 | File transferring |
+| 3006 | Cancelling |
+| 3007 | Updating firmware |
+| 3008 | Calibrating |
+| 3009 | Semi-auto printing |
+| 3010 | Scan required |
+| 3011 | Semi-auto scanning |
+| 3012 | Waiting to scan |
+| 3013 | Waiting to copy |
+| 3014 | Rendering |
+| 3015 | Initializing print engine |
+| 3016 | Decoding |
+| 3017 | Loading paper |
+| 3018 | Printing yellow |
+| 3019 | Printing magenta |
+| 3020 | Printing cyan |
+| 3021 | Printing overcoat |
+| 3022 | Preheating |
+| 3023 | Cooling down |
+| 3024 | Cleaning |
+| 3025 | Feeding |
+| 3026 | Ejecting paper |
+| 3027 | Smart-sheet processing |
+| 3028 | Cutter picking/positioning |
+| 3029 | Cutter homing |
+| 3030 | Cutting |
+| 3031 | Cut eject |
+| 4002 | Normal / processing |
+| 5002 | Not-real-off / transitional off state |
+| 6000 | Hardware error |
 
-Busy phases observed (while `printer-state="40"`):
+For combo jobs, `3028-3031` are particularly important because they establish that the physical cut phase actually began. A robust host should not declare a combo job successful merely because `job-state=9` appeared if no cut phase was ever observed.
 
-- `"3015"`, `"3016"`, `"3018"`, `"3019"`, `"3020"`, `"3021"`, `"3025"`, `"3028"`, `"3029"`, `"3030"`, `"3031"`
+### 6.3 `printer-state-alerts` and Error Codes
 
-The known phase progression for a combo job (from liene-pixcut-s1-api):
+`printer-state-alerts` is the third element returned by:
 
-`decoding → init → printing_Y → printing_M → printing_C → printing_OC → cutting_pick → cutting_home → cutting_cutting → cutting_eject → idle`
+```json
+{"method":"get-prop","params":["printer-state","printer-sub-state","printer-state-alerts"]}
+```
 
-The numeric sub-state codes above map onto these phases, but the exact code-to-phase mapping is not yet confirmed on USB.
+Normal operation commonly reports `::0`. Alerts commonly appear as strings such as `::8102`, but clients should tolerate integers, arrays, and multiple digit runs. Preserve the raw field in logs even when a friendly mapping is available.
 
-### 6.3 `printer-state-alerts` — Error Codes (Observed)
+The current host classification treats these codes as **recoverable**: `5001, 5306, 5401, 5402, 5417, 5418, 5419, 5420, 5506, 8101, 8102, 8104, 8106`. For these conditions the printer can often resume after the user fixes the condition, so the host should surface an action-required state and continue polling. Other known alert codes are treated as terminal for the current job unless later testing proves otherwise.
 
-Returned as the third element of the `get-prop(printer-state, printer-sub-state, printer-state-alerts)` response array.
-Also appears in the `result` of a rejected `combo-job` response as `{"error-code": <N>}` when the device refuses to start a job.
+| Code | Host classification | Meaning / action |
+| ---: | --- | --- |
+| `5001` | Recoverable / action required | Paper is empty - load a new sheet and wait for the printer to resume. |
+| `5002` | Terminal / retry after correction | Paper is installed but the printer cannot identify its size - check the tray and media. |
+| `5003` | Terminal / retry after correction | Printer detected 4x6 media when this job expects different stock. |
+| `5004` | Terminal / retry after correction | Printer detected 5x7 media when this job expects different stock. |
+| `5005` | Terminal / retry after correction | Printer detected A4 media when this job expects different stock. |
+| `5199` | Terminal / retry after correction | Ribbon or paper feed jam - power off the printer and clear the jammed ribbon or media before retrying. |
+| `5301` | Terminal / retry after correction | Paper feeder alignment error - remove and reinsert the paper tray, then retry. |
+| `5302` | Terminal / retry after correction | Paper feeder alignment error - remove and reinsert the paper tray, then retry. |
+| `5303` | Terminal / retry after correction | Paper feeder alignment error - remove and reinsert the paper tray, then retry. |
+| `5304` | Terminal / retry after correction | Paper mismatch - load the correct media for this job. |
+| `5305` | Terminal / retry after correction | Paper tray position fault - reseat the tray and retry. |
+| `5306` | Recoverable / action required | No paper/media cartridge installed - insert the paper cartridge and retry. |
+| `5401` | Recoverable / action required | Paper cartridge is out of paper - refill or replace the paper cassette and retry. |
+| `5402` | Recoverable / action required | Paper was not picked up - reload the sheet or tray and retry. |
+| `5403` | Terminal / retry after correction | Paper jam in the feed path - power off the printer and clear the jam before retrying. |
+| `5404` | Terminal / retry after correction | Paper is too short for this job - remove it and load the correct media. |
+| `5405` | Terminal / retry after correction | Paper was not picked from the bypass path - reload the media and retry. |
+| `5406` | Terminal / retry after correction | Paper jam at the registration sensor - power off the printer and clear the jam. |
+| `5407` | Terminal / retry after correction | Paper jam before the exit sensor - power off the printer and clear the jam. |
+| `5408` | Terminal / retry after correction | Paper jam at the exit sensor - power off the printer and clear the jam. |
+| `5409` | Terminal / retry after correction | Paper jam in the fuser path - power off the printer and clear the jam. |
+| `5410` | Terminal / retry after correction | Paper was not picked for duplex handling - reload the media and retry. |
+| `5411` | Terminal / retry after correction | Paper jam at the relay sensor - power off the printer and clear the jam. |
+| `5412` | Terminal / retry after correction | Paper jam before the registration sensor - power off the printer and clear the jam. |
+| `5413` | Terminal / retry after correction | Bypass tray is out of paper - load media and retry. |
+| `5414` | Terminal / retry after correction | Media size mismatch - wrong paper stock loaded for this job type. Open the bottom panel to remove the paper, then power cycle and retry with the correct stock. |
+| `5415` | Terminal / retry after correction | Paper kick failed - remove and reload the media, then retry. |
+| `5416` | Terminal / retry after correction | Paper mismatch - load the correct media for this job. |
+| `5417` | Recoverable / action required | Printer is waiting for paper removal - remove the sheet and wait for it to resume. |
+| `5418` | Recoverable / action required | Printer is waiting for paper removal - remove the sheet and wait for it to resume. |
+| `5419` | Recoverable / action required | Paper was removed during the job - reload media and retry if the printer does not resume. |
+| `5420` | Recoverable / action required | Paper pickup jam - clear the feed path and reload the media. |
+| `5506` | Recoverable / action required | Printer cover is open - close it and wait for the printer to resume. |
+| `6002` | Terminal / retry after correction | Printer system error - power-cycle the printer and retry. |
+| `7305` | Terminal / retry after correction | Printer battery is very low - connect power before retrying. |
+| `7306` | Terminal / retry after correction | Printer battery charge is very low - connect power before retrying. |
+| `8001` | Terminal / retry after correction | Printer rejected an invalid print-job request. |
+| `8006` | Terminal / retry after correction | Printer is still processing the previous job. Wait a few seconds for it to finish cancelling or resetting, then try again. |
+| `8008` | Terminal / retry after correction | File size of job is too large as submitted. |
+| `8011` | Terminal / retry after correction | Printer rejected job - likely in an error state. Power it off and back on, then retry. |
+| `8101` | Recoverable / action required | Ink/ribbon cartridge empty - replace the cartridge. |
+| `8102` | Recoverable / action required | No ink ribbon installed - insert a ribbon cartridge and retry. |
+| `8103` | Terminal / retry after correction | Paper or ribbon jam - power off the printer and clear the jammed media before retrying. |
+| `8104` | Recoverable / action required | Invalid ribbon type - install the correct ribbon cartridge. |
+| `8105` | Terminal / retry after correction | Ribbon jam - power off the printer and clear the ribbon path before retrying. |
+| `8106` | Recoverable / action required | Ribbon initialization error - reseat or replace the ribbon cartridge. |
+| `8199` | Terminal / retry after correction | Ribbon error - reseat or replace the ribbon cartridge. |
+| `8301` | Terminal / retry after correction | Cut path is outside the printer's cut range - reduce or move the cut path and retry. |
+| `8302` | Terminal / retry after correction | Printer rejected the PLT cut data - simplify the cut path and retry. |
+| `8303` | Terminal / retry after correction | Printer timed out while processing PLT cut data - simplify the cut path and retry. |
+| `8401` | Terminal / retry after correction | Cutter media sensor jam - power off the printer and clear the cutter path. |
+| `8402` | Terminal / retry after correction | Cutter initialization paper jam - power off the printer and clear the media path. |
+| `8403` | Terminal / retry after correction | Cutter found media in the path during initialization - remove the media and retry. |
+| `8404` | Terminal / retry after correction | Cutter failed to return home - power off the printer and check the cutter path. |
+| `8405` | Terminal / retry after correction | Cutter paper handoff failed - power off the printer and clear the media path. |
+| `8406` | Terminal / retry after correction | Cutter failed to pick paper - reload the media and retry. |
+| `8407` | Terminal / retry after correction | Cutter failed to pick paper - reload the media and retry. |
+| `8408` | Terminal / retry after correction | Cutter failed to find home - power off the printer and check the cutter path. |
+| `8409` | Terminal / retry after correction | Cutter feed motor stalled - power off the printer and clear the media path. |
+| `8410` | Terminal / retry after correction | Cutter carriage motor stalled - power off the printer and check the cutter path. |
+| `8411` | Terminal / retry after correction | Cutter paper eject failed - power off the printer and remove the media. |
+| `8412` | Terminal / retry after correction | Cutter sensor jam - power off the printer and clear the cutter path. |
+| `8413` | Terminal / retry after correction | Cutter motor stalled - power off the printer and check the cutter path. |
+| `9002` | Terminal / retry after correction | Paper tray battery is very low - connect power before retrying. |
+| `9003` | Terminal / retry after correction | Paper tray battery charge is very low - connect power before retrying. |
+| `9004` | Terminal / retry after correction | Paper tray battery temperature is high - let the printer cool before retrying. |
+| `9005` | Terminal / retry after correction | Paper tray battery temperature is low - let the printer warm up before retrying. |
 
-| Code | Trigger condition | Observed behavior |
-| --- | --- | --- |
-| `5306` | No paper/media cartridge installed | Appears in `printer-state-alerts` as `::5306` during print attempt. Printer enters state 60 (Error), sub-state 3015. Insert paper cartridge; device auto-resumes. |
-| `5401` | Paper cassette out of paper | Appears in `printer-state-alerts` as `::5401` during print attempt. Printer enters state 60 (Error), sub-state 3015. Refill or replace the paper cassette; device auto-resumes. |
-| `5414` | Media size mismatch → physical paper jam | Observed when 4×6 photo paper was loaded but job requested `media-size` 5013 (4×7 sticker stock). The printer feeds the paper expecting 4×7 length; the shorter 4×6 sheet jams and must be removed manually by opening the bottom panel. `big-data` paper jam counters do **not** increment for this fault — those counters appear to track only consumable/user-serviceable events, not mid-job mechanical failures. Printer enters state 60 (Error), sub-state 5000. Power cycle required to recover. |
-| `8011` | Printer not ready / in error state | Returned in `combo-job` response as `{"error-code": 8011}` when the printer rejects a new job submission (e.g. already in error state from a prior fault). Power cycle the printer and retry. |
-| `8101` | Ink/ribbon cartridge empty/depleted | Appears in `printer-state-alerts` as `::8101`; printer pauses mid-job. Device auto-resumes after cartridge replacement. |
-| `8102` | No ink ribbon/cartridge installed | Appears in `printer-state-alerts` as `::8102` during print attempt. Printer enters state 60 (Error). Insert ribbon and retry. |
+Two error substates are also useful when no specific alert code is available:
 
-**Notes:**
+| `printer-sub-state` | Meaning |
+| ---: | --- |
+| 5000 | Printer mechanism jam or internal fault; clear paper/ribbon/mechanism and power-cycle before retrying. |
+| 6000 | Hardware error state; power-cycle and clear any jammed paper/ribbon before retrying. |
 
-- `printer-state-alerts` encoding during normal operation is `::0` (observed). The exact format (bitfield vs namespace-colon encoding) is not fully understood.
-- When `printer-state="60"` (Error), the alerts field is expected to contain the relevant error code. Always log the raw alerts value alongside any mapped description.
-- Further error codes likely exist for paper jams, head errors, etc. — add observations here as discovered.
+When `printer-state="60"`:
+
+1. Parse and log all alert codes.
+2. If every code is in the recoverable set, show action required and keep polling.
+3. If any code is non-recoverable, fail the current job.
+4. If no code is present, use the error sub-state when known; otherwise report the raw state/sub-state/alerts tuple.
+
 
 ---
 
@@ -559,9 +771,15 @@ Currently treated as **out-of-band**.
 3. Host enters poll loop:
    - `get-job-info(job-id)`
    - `get-prop(printer-state, printer-sub-state, printer-state-alerts)`
-4. Job completes (`job-state=9`, `job-sub-state=9000`, `job-state-reason=90001`)
-5. Host queries `big-data`
-6. Printer returns to idle (`printer-state="20"`, `printer-sub-state="2000"`)
+4. Job reports job-level completion (`job-state=9`, `job-sub-state=9000`, `job-state-reason=90001`).
+5. For combo jobs, host confirms that a cut phase was actually observed (`printer-sub-state` 3028-3031 and/or cut counters).
+6. Host continues polling until the printer returns to idle (`printer-state="20"`, `printer-sub-state="2000"`); multiple idle polls are preferable to a single transient sample.
+7. Host queries `big-data`
+
+`job-state=9` is the job-level completion report, not the final physical-device
+confirmation. A host must not display the print-and-cut job as complete until
+the printer has also returned to idle. This allows a late printer error during
+cutting to be surfaced instead of being hidden by the earlier job-state report.
 
 **Keep-Alive / Heartbeat:**
 
@@ -569,12 +787,127 @@ During data transfer and processing, the host **must** periodically send status 
 
 ---
 
-## 9. Known Gaps / Further Research
+## 9. Configuration, Calibration, and Maintenance Knowledge
+
+This section records useful protocol knowledge even where PixCut-App deliberately does not expose a high-level feature. Treat the confidence notes seriously: some commands come from vendor application/source analysis and have not been exhaustively validated over retail USB firmware.
+
+### 9.1 Safe property update: `auto-off-interval`
+
+Known values from the vendor UI are:
+
+| Setting | Seconds |
+| --- | ---: |
+| Never | 0 |
+| 5 minutes | 300 |
+| 10 minutes | 600 |
+| 20 minutes | 1200 |
+| 30 minutes | 1800 |
+| 60 minutes | 3600 |
+
+USB-style request:
+
+```json
+{
+  "method": "set-prop",
+  "params": {
+    "auto-off-interval": 300
+  }
+}
+```
+
+Treat the mutation as successful only when the result reports error code 0. Configuration writes should only be attempted while the printer is idle (`printer-state=20`, `printer-sub-state=2000`) and has no active alerts.
+
+### 9.2 Cut calibration protocol
+
+Vendor application analysis shows a manual print/cut alignment workflow gated in that UI at firmware **1.0.6_0045 or newer**.
+
+#### Reset calibration
+
+Vendor/legacy dialect:
+
+```json
+{
+  "id": 123,
+  "method": "clean_cut_params",
+  "params": {
+    "type": "calibration"
+  },
+  "spec_type": 1
+}
+```
+
+Expected success is `result: ["OK"]`.
+
+Firmware tables also contain the dash form `clean-cut-params`. The vendor code includes protocol-dialect conversion between hyphens and underscores, so do not assume both spellings work identically over every transport/firmware combination.
+
+#### Set calibration
+
+```json
+{
+  "id": 124,
+  "method": "set-cut-params",
+  "params": {
+    "media-type": 2030,
+    "paper-offset-delta": 0.0,
+    "paper-resolution-ratio": 0.0,
+    "carrier-offset-delta": 0.0,
+    "carrier-resolution-ratio": 0.0,
+    "paper-dynamic-offset-enable": false
+  },
+  "spec_type": 1
+}
+```
+
+Vendor parameter mapping:
+
+- `media-type`: 2030 in the inspected sticker-media calibration flow
+- `paper-offset-delta`: measured Y offset
+- `paper-resolution-ratio`: measured Y scale/ratio correction
+- `carrier-offset-delta`: measured X offset
+- `carrier-resolution-ratio`: measured X scale/ratio correction
+- `paper-dynamic-offset-enable`: present in the request model; not explicitly enabled in the inspected calibration activity
+
+The exact physical units/ranges for the four numeric corrections remain an open validation item. Do not send guessed calibration values to a production printer.
+
+#### Cancel alignment
+
+```json
+{
+  "id": 125,
+  "method": "cancel-alignment",
+  "params": {
+    "alignment-type": 2
+  }
+}
+```
+
+The vendor flow uses this when aborting an in-progress alignment operation.
+
+#### Calibration pattern job
+
+The vendor calibration flow resets calibration, then prints a normal 4x7 sticker-media combo job:
+
+- `media-size`: 5013 / 4x7 sticker media
+- `media-type`: 2030
+- `job-type`: 600
+- `copies`: 1
+- print raster plus a calibration-specific PLT pattern
+
+A reimplementation should generate its own calibration artwork/toolpath rather than depending on proprietary bundled assets.
+
+### 9.3 High-risk/service commands
+
+Firmware/source analysis also exposes commands including `clean-eng`, `factory-reset`, `user-reset`, `service-mode`, `set-mfg-mode`, and `reset-timing`. They are documented as research leads, not safe general-purpose API. Do not automatically retry service/configuration mutations after an unexpected response.
+
+
+---
+
+## 10. Known Gaps / Further Research
 
 Open questions:
 
 - Full request-side JSON schemas (exact params for identity query, combo-job, get-prop usage)
-- Cancel / pause / resume commands
+- Further characterize `resume-printer` semantics and confirm whether `pause-printer` exists on retail firmware.
 - Error state mappings (`printer-state-alerts` decoding)
 - **Cut path complexity caveat:** Very dense PLT paths (thousands of `D` coordinates streamed as one line) have caused the device to halt mid-cut and drive the head off-page. Mitigations that worked in testing:
   - Pre-simplify curves/paths to reduce point count.
@@ -587,7 +920,7 @@ Open questions:
   - `job-type`
   - `document-format` (as reported in job-info)
   - identity tuple fields #4 and #6
-- Calibration, maintenance, firmware update commands
+- Validate calibration/service command dialects and numeric calibration units on retail USB firmware.
 - Full mapping of `printer-sub-state` values to phases
 - Whether WinUSB endpoint mapping is fixed to Ep04 in the app, and the underlying endpoint addresses/directions from descriptors
 - Whether `dilation` / `knifePressure` exist as actual device settings/commands (or are app-only pipeline controls); search for corresponding JSON methods or `set-prop` style calls
@@ -610,6 +943,20 @@ These keys/methods were queried over USB and returned empty objects or unclear v
 - `media-type` (returned `{}` while `media-size` was populated)
 - `big_data` (underscore alias; returned `{}`)
 - `ota-progress` (returned a large counter; meaning unknown)
+
+### Firmware-derived but not USB-captured
+
+These method/property names were found in firmware string extraction near known JSON protocol names, but have not been confirmed with request/response captures in this repo:
+
+- Job / queue control: `cancel-job`, `confirm-job`, `get-job-id-list`, `get-job-id-list-act`
+- Maintenance / calibration: `clean-eng`, `set-cut-params`, `clean-cut-params`
+- Firmware / OTA: `ota-job`, `get-ota-info`, `upgrade-firmware`, `bt-update`
+- Settings / service: `set-prop`, `factory-reset`, `set-ap-pwd`, `print-function-enable`
+- Logs: `log-upload`, `log-file`
+- Aggregate status: `job-status`, `mixed-status`, `device-status`, `printer-status`
+- Other properties: `paper-size`, `auto-sleep-interval`, `off_interval`, `sleep_interval`
+
+Prefer dash-separated names for tests. Firmware often contains both dash and underscore aliases, but USB captures consistently use dash-separated protocol names.
 
 ---
 
@@ -655,7 +1002,7 @@ These keys/methods were queried over USB and returned empty objects or unclear v
 
 - This choice is consistent with the PLT language being HPGL-inspired; minor discrepancies may result from blade offset, material stretch, or cutter compensation.
 
-An explicit pixel-to-PLT coordinate conversion formula (from liene-pixcut-s1-api; not yet independently validated on USB):
+An explicit pixel-to-PLT coordinate conversion formula from related reverse engineering matches the now-confirmed 1216x2128 raster geometry:
 
 ```text
 plt_x = (pixel_y * 1.01333 - 14.0) * 3.3866668
@@ -677,10 +1024,11 @@ Note the axis swap (pixel_y → plt_x, pixel_x → plt_y), consistent with the �
   - `KP42` is the default used by the official app for Liene sticker media.
   - Above `KP50` performs a full perforation through backing; risks damaging the cutter’s strip. Strip is not officially user-serviable but can likely be replaced with an 8mm wide Graphtec/Roland-compatible cutting strip.
   - Thinner media (e.g., Oracal 651 vinyl) likely needs lower pressure (≈`KP35` observed as a good starting point).
-- `KP` may be sent multiple times per job to vary pressure by path/segment; device accepts it inline with `U/D` commands.
-- Safe practice: adjust in small steps and test; keep to a single `KP` per job unless deliberately experimenting.
+- `KP` may be sent multiple times per job to vary pressure by path/segment; the device accepts it inline with `U/D` commands.
+- Empirical host behavior shows that after changing `KP`, a tiny blade-up reseat movement makes the new pressure reliably take effect before the next cut. The working sequence is: move `U` to the next path start, move `U` about **0.1 mm in X**, then move `U` back to the exact path start, followed by the new cut. This is a host-generated reliability technique, not a separate printer command.
+- Perf-cut pressure around the low-50s has been used successfully; `KP60` is too aggressive for normal perf cutting on tested sticker stock. Pressure is hardware/media-sensitive, so adjust in small steps.
 
-## 10. Disclaimer
+## 12. Disclaimer
 
 This document is **reverse-engineered** from observed behavior.  
 It is not affiliated with or endorsed by the device manufacturer.
