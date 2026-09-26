@@ -54,6 +54,27 @@ DEFAULT_LAYOUT_DPI: int = 300
 DEFAULT_MARGIN_MM: float = 2.0
 DEFAULT_PADDING_MM: float = 3.0
 DEFAULT_MIN_AREA_MM2: float = 4.0    # ignore artifacts smaller than this
+PRINTER_MARGIN_X_PX: int = 8
+PRINTER_MARGIN_Y_PX: int = 14
+
+
+def add_printer_margins(image):
+    """
+    Place a logical 300-DPI sheet raster inside the PixCut firmware raster.
+
+    4x7 logical content is 1200x2100; the device expects 1216x2128.
+    The cut geometry remains in the logical 4x7 coordinate system.
+    """
+    from PIL import Image
+
+    rgb = image.convert("RGB")
+    padded = Image.new(
+        "RGB",
+        (rgb.width + PRINTER_MARGIN_X_PX * 2, rgb.height + PRINTER_MARGIN_Y_PX * 2),
+        (255, 255, 255),
+    )
+    padded.paste(rgb, (PRINTER_MARGIN_X_PX, PRINTER_MARGIN_Y_PX))
+    return padded
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +676,7 @@ def process_images(
             gap_u = perf_gap_mm * units_per_mm
             plt_parts = ["IN", "VER0.1.0"]
             plt_parts += _plt_path_commands(plt_kiss, dash_u, gap_u, dash_kp=perf_kp, gap_kp=kp,
-                                            nudge_u=0.2 * units_per_mm)
+                                            nudge_u=0.1 * units_per_mm)
         else:
             plt_parts = ["IN", "VER0.1.0", f"KP{kp}"]
             plt_parts += _plt_path_commands(plt_kiss)
@@ -1073,8 +1094,8 @@ class LayoutCanvas:
             self._canvas_rgba = None
             self._overflow_count = 0
 
-    def _build_jpeg(self, quality: int) -> bytes:
-        """Composite _canvas_rgba over the background (or white) and return JPEG bytes."""
+    def _build_jpeg(self, quality: int, *, printer_pad: bool = False) -> bytes:
+        """Composite the sheet and return JPEG bytes; optionally add printer registration margins."""
         import logging as _logging
         from PIL import Image as _PIL_Image
         canvas_w_px, canvas_h_px = self._canvas_dims()
@@ -1091,6 +1112,8 @@ class LayoutCanvas:
         else:
             bg = _PIL_Image.new("RGBA", canvas.size, (255, 255, 255, 255))
         result = _PIL_Image.alpha_composite(bg, canvas).convert("RGB")
+        if printer_pad:
+            result = add_printer_margins(result)
         buf = io.BytesIO()
         result.save(buf, format="JPEG", quality=quality)
         return buf.getvalue()
@@ -1108,5 +1131,5 @@ class LayoutCanvas:
         with self._lock:
             if self._result is None:
                 raise ValueError("Canvas is empty — add stickers before printing.")
-            jpg_bytes = self._build_jpeg(quality=92)
+            jpg_bytes = self._build_jpeg(quality=92, printer_pad=True)
             return jpg_bytes, self._result.cut_plt.encode(), self._result.cut_svg
