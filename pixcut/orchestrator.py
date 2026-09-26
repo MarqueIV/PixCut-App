@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 import hashlib
+import io
 
 from .framing import chunk_payload, encode_json_command, parse_balanced_json
 from .logging_utils import SessionLogger, hexdump
@@ -16,20 +17,88 @@ from .transport import USBConfig, USBTransport
 log = logging.getLogger("pixcut.orchestrator")
 MAX_JPG_BYTES = 1024 * 1024  # ~1 MiB device limit observed
 
-# Known printer error codes observed via reverse engineering.
-# Wire format for printer-state-alerts is "::CODE" (e.g. "::8102").
+# Known printer error codes from firmware/source analysis and observed sessions.
+# Wire format for printer-state-alerts is commonly "::CODE" (e.g. "::8102").
 PRINTER_ERROR_CODES: Dict[int, str] = {
-    5306: "No paper/media cartridge installed — insert the paper cartridge and retry.",
-    5401: "Paper cartridge is out of paper — refill or replace the paper cassette and retry.",
-    5414: "Media size mismatch — wrong paper stock loaded for this job type. The printer will physically jam; open the bottom panel to remove the paper, then power cycle and retry with the correct stock.",
-    8011: "Printer rejected job — likely in an error state. Power it off and back on, then retry.",
-    8101: "Ink/ribbon cartridge empty — replace the cartridge.",
-    8102: "No ink ribbon installed — insert a ribbon cartridge and retry.",
+    5001: "Paper is empty - load a new sheet and wait for the printer to resume.",
+    5002: "Paper is installed but the printer cannot identify its size - check the tray and media.",
+    5003: "Printer detected 4x6 media when this job expects different stock.",
+    5004: "Printer detected 5x7 media when this job expects different stock.",
+    5005: "Printer detected A4 media when this job expects different stock.",
+    5199: "Ribbon or paper feed jam - power off the printer and clear the jammed ribbon or media before retrying.",
+    5301: "Paper feeder alignment error - remove and reinsert the paper tray, then retry.",
+    5302: "Paper feeder alignment error - remove and reinsert the paper tray, then retry.",
+    5303: "Paper feeder alignment error - remove and reinsert the paper tray, then retry.",
+    5304: "Paper mismatch - load the correct media for this job.",
+    5305: "Paper tray position fault - reseat the tray and retry.",
+    5306: "No paper/media cartridge installed - insert the paper cartridge and retry.",
+    5401: "Paper cartridge is out of paper - refill or replace the paper cassette and retry.",
+    5402: "Paper was not picked up - reload the sheet or tray and retry.",
+    5403: "Paper jam in the feed path - power off the printer and clear the jam before retrying.",
+    5404: "Paper is too short for this job - remove it and load the correct media.",
+    5405: "Paper was not picked from the bypass path - reload the media and retry.",
+    5406: "Paper jam at the registration sensor - power off the printer and clear the jam.",
+    5407: "Paper jam before the exit sensor - power off the printer and clear the jam.",
+    5408: "Paper jam at the exit sensor - power off the printer and clear the jam.",
+    5409: "Paper jam in the fuser path - power off the printer and clear the jam.",
+    5410: "Paper was not picked for duplex handling - reload the media and retry.",
+    5411: "Paper jam at the relay sensor - power off the printer and clear the jam.",
+    5412: "Paper jam before the registration sensor - power off the printer and clear the jam.",
+    5413: "Bypass tray is out of paper - load media and retry.",
+    5414: "Media size mismatch - wrong paper stock loaded for this job type. Open the bottom panel to remove the paper, then power cycle and retry with the correct stock.",
+    5415: "Paper kick failed - remove and reload the media, then retry.",
+    5416: "Paper mismatch - load the correct media for this job.",
+    5417: "Printer is waiting for paper removal - remove the sheet and wait for it to resume.",
+    5418: "Printer is waiting for paper removal - remove the sheet and wait for it to resume.",
+    5419: "Paper was removed during the job - reload media and retry if the printer does not resume.",
+    5420: "Paper pickup jam - clear the feed path and reload the media.",
+    5506: "Printer cover is open - close it and wait for the printer to resume.",
+    6002: "Printer system error - power-cycle the printer and retry.",
+    7305: "Printer battery is very low - connect power before retrying.",
+    7306: "Printer battery charge is very low - connect power before retrying.",
+    8001: "Printer rejected an invalid print-job request.",
+    8006: "Printer is still processing the previous job. Wait a few seconds for it to finish cancelling or resetting, then try again.",
+    8008: "File size of job is too large as submitted.",
+    8011: "Printer rejected job - likely in an error state. Power it off and back on, then retry.",
+    8101: "Ink/ribbon cartridge empty - replace the cartridge.",
+    8102: "No ink ribbon installed - insert a ribbon cartridge and retry.",
+    8103: "Paper or ribbon jam - power off the printer and clear the jammed media before retrying.",
+    8104: "Invalid ribbon type - install the correct ribbon cartridge.",
+    8105: "Ribbon jam - power off the printer and clear the ribbon path before retrying.",
+    8106: "Ribbon initialization error - reseat or replace the ribbon cartridge.",
+    8199: "Ribbon error - reseat or replace the ribbon cartridge.",
+    8301: "Cut path is outside the printer's cut range - reduce or move the cut path and retry.",
+    8302: "Printer rejected the PLT cut data - simplify the cut path and retry.",
+    8303: "Printer timed out while processing PLT cut data - simplify the cut path and retry.",
+    8401: "Cutter media sensor jam - power off the printer and clear the cutter path.",
+    8402: "Cutter initialization paper jam - power off the printer and clear the media path.",
+    8403: "Cutter found media in the path during initialization - remove the media and retry.",
+    8404: "Cutter failed to return home - power off the printer and check the cutter path.",
+    8405: "Cutter paper handoff failed - power off the printer and clear the media path.",
+    8406: "Cutter failed to pick paper - reload the media and retry.",
+    8407: "Cutter failed to pick paper - reload the media and retry.",
+    8408: "Cutter failed to find home - power off the printer and check the cutter path.",
+    8409: "Cutter feed motor stalled - power off the printer and clear the media path.",
+    8410: "Cutter carriage motor stalled - power off the printer and check the cutter path.",
+    8411: "Cutter paper eject failed - power off the printer and remove the media.",
+    8412: "Cutter sensor jam - power off the printer and clear the cutter path.",
+    8413: "Cutter motor stalled - power off the printer and check the cutter path.",
+    9002: "Paper tray battery is very low - connect power before retrying.",
+    9003: "Paper tray battery charge is very low - connect power before retrying.",
+    9004: "Paper tray battery temperature is high - let the printer cool before retrying.",
+    9005: "Paper tray battery temperature is low - let the printer warm up before retrying.",
 }
 
-# Error codes that represent recoverable consumable issues.
-# The device will auto-resume once the user addresses the problem, so we keep polling.
-RECOVERABLE_ERROR_CODES = {5306, 5401, 8101, 8102}
+ERROR_SUB_STATE_CODES: Dict[int, str] = {
+    5000: "Printer mechanism jam or internal fault - power off the printer and clear any jammed paper or ribbon before retrying.",
+    6000: "Printer entered a hardware error state - power off the printer and clear any jammed paper or ribbon before retrying.",
+}
+
+# Conditions where the printer can normally resume after the user fixes the issue.
+RECOVERABLE_ERROR_CODES = {
+    5001, 5306, 5401, 5402, 5417, 5418, 5419, 5420,
+    5506, 8101, 8102, 8104, 8106,
+}
 
 
 import re as _re
@@ -86,7 +155,7 @@ class JobConfig:
     user_account: str = "12345678"
     jpg_timeout_s: int = 180
     plt_timeout_s: int = 100
-    poll_interval: float = 10.0  # seconds between status polls after upload
+    poll_interval: float = 2.0  # seconds between status polls after upload
     max_poll_s: Optional[int] = None  # overall poll timeout; None = unlimited
     max_idle_polls: int = 0  # optional stop if printer returns to idle repeatedly (0 disables)
     uuid: Optional[str] = None
@@ -103,6 +172,124 @@ def _first_result(result_obj):
     if isinstance(result_obj, list) and result_obj:
         return result_obj[0]
     return result_obj
+
+
+def _scalar_string(value) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)):
+        return str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+    return str(value).strip()
+
+
+def _int_value(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _describe_error_sub_state(value) -> str:
+    return ERROR_SUB_STATE_CODES.get(_int_value(value), "")
+
+
+def _extract_job_ids(value) -> list[int]:
+    """Extract positive job IDs from the response shapes seen from get-job-id-list."""
+    ids: list[int] = []
+
+    def add(v) -> None:
+        if v is None:
+            return
+        if isinstance(v, bool):
+            return
+        if isinstance(v, (int, float)):
+            n = int(v)
+            if n > 0:
+                ids.append(n)
+            return
+        if isinstance(v, str):
+            for part in v.split(";"):
+                part = part.strip()
+                if part.isdigit() and int(part) > 0:
+                    ids.append(int(part))
+            return
+        if isinstance(v, (list, tuple)):
+            for item in v:
+                add(item)
+            return
+        if isinstance(v, dict):
+            for key in ("job-id-list", "job_id_list", "job-id", "job_id", "result"):
+                if key in v:
+                    add(v[key])
+            return
+
+    add(value)
+    # Preserve device order while removing duplicates.
+    return list(dict.fromkeys(ids))
+
+
+PRINTER_RASTER_SIZES = {
+    # media-size: (logical content raster, firmware raster)
+    5013: ((1200, 2100), (1216, 2128)),  # 4x7 cut-capable sticker stock
+    5012: ((1200, 1800), (1216, 1828)),  # 4x6 print-only photo stock
+}
+
+
+def _prepare_jpg_for_printer(jpg_bytes: bytes, media_size: int) -> bytes:
+    """
+    Pad a nominal 300-DPI sheet raster into the printer's real raster space.
+
+    4x7: 1200x2100 -> 1216x2128 (8 px L/R, 14 px T/B)
+    4x6: 1200x1800 -> 1216x1828
+
+    Already-padded JPEGs are returned byte-for-byte. Unknown dimensions are
+    left untouched so custom/research workflows are not silently rescaled.
+    """
+    spec = PRINTER_RASTER_SIZES.get(media_size)
+    if not spec:
+        return jpg_bytes
+
+    from PIL import Image
+
+    logical_size, padded_size = spec
+    with Image.open(io.BytesIO(jpg_bytes)) as src:
+        if src.size == padded_size:
+            return jpg_bytes
+        if src.size != logical_size:
+            log.warning(
+                "JPEG dimensions %sx%s do not match expected logical %sx%s or padded %sx%s raster for media-size %s; sending unchanged.",
+                src.width, src.height,
+                logical_size[0], logical_size[1],
+                padded_size[0], padded_size[1],
+                media_size,
+            )
+            return jpg_bytes
+
+        rgb = src.convert("RGB")
+        padded = Image.new("RGB", padded_size, (255, 255, 255))
+        padded.paste(rgb, (8, 14))
+
+        smallest = None
+        for quality in (95, 92, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45):
+            out = io.BytesIO()
+            padded.save(out, format="JPEG", quality=quality)
+            data = out.getvalue()
+            smallest = data
+            if len(data) <= MAX_JPG_BYTES:
+                log.info(
+                    "Padded JPEG from %sx%s to %sx%s for printer registration (quality=%s, %s bytes).",
+                    logical_size[0], logical_size[1], padded_size[0], padded_size[1], quality, len(data),
+                )
+                return data
+        return smallest if smallest is not None else jpg_bytes
+
+
+def _completion_confirmed(
+    *, print_only: bool, cut_started: bool, completion_reported: bool, idle_polls: int
+) -> bool:
+    return completion_reported and idle_polls >= 3 and (print_only or cut_started)
 
 
 class PixcutClient:
@@ -418,7 +605,7 @@ class PixcutClient:
             raise ValueError(f"JPEG is {len(jpg_bytes)} bytes; device limit is ~1 MiB.")
 
     def create_print_job(self, jpg_path: Path, job_cfg: JobConfig) -> Tuple[int, dict]:
-        jpg_bytes = Path(jpg_path).read_bytes()
+        jpg_bytes = _prepare_jpg_for_printer(Path(jpg_path).read_bytes(), job_cfg.media_size)
         self._enforce_jpg_size(jpg_bytes)
         default_hash = "26b8714aea78792854637621ad5cf1c4ed31ad1f"
         jpg_hash = job_cfg.hash_value or default_hash or hashlib.sha1(jpg_bytes).hexdigest()
@@ -453,7 +640,7 @@ class PixcutClient:
         plt_path: Path,
         job_cfg: JobConfig,
     ) -> Tuple[int, dict]:
-        jpg_bytes = Path(jpg_path).read_bytes()
+        jpg_bytes = _prepare_jpg_for_printer(Path(jpg_path).read_bytes(), job_cfg.media_size)
         plt_bytes = Path(plt_path).read_bytes()
         self._enforce_jpg_size(jpg_bytes)
         default_uuid = "f45d69a1da22727c26aa863ea657de8b32a501f2"
@@ -560,50 +747,207 @@ class PixcutClient:
                 job_id=job_id,
             )
 
-    def poll_job(self, job_id: int, job_cfg: JobConfig, status_callback=None) -> dict:
+    def get_job_ids(self) -> list[int]:
+        resp = self._send_json(
+            {"method": "get-job-id-list", "params": {}},
+            expect_response=True,
+        ) or {}
+        return _extract_job_ids(resp.get("result"))
+
+    def discover_active_job_id(self) -> Optional[int]:
+        ids = self.get_job_ids()
+        return ids[0] if ids else None
+
+    def cancel_job(self, job_id: int) -> dict:
+        return self._send_json(
+            {"method": "cancel-job", "params": {"job-id": int(job_id)}},
+            expect_response=True,
+        ) or {}
+
+    def confirm_job(self, job_id: int) -> dict:
+        # The working USB print-only flow uses the underscore spelling.
+        return self._send_json(
+            {"method": "confirm_job", "params": {"job-id": int(job_id)}},
+            expect_response=True,
+        ) or {}
+
+    def poll_job(
+        self,
+        job_id: int,
+        job_cfg: JobConfig,
+        status_callback=None,
+        *,
+        print_only: bool = False,
+    ) -> dict:
         poll_interval = job_cfg.poll_interval
         max_poll_s = job_cfg.max_poll_s
         start = time.time()
         last_state = None
-        idle_polls = 0
-        seen_busy = False
         last_transfer = None
-        seen_cartridge_empty = False
         last_cut = (None, None)
         last_line_len = 0
+        seen_busy = False
+        cut_started = False
+        completion_reported = False
+        completion_idle_polls = 0
+        unconfirmed_idle_polls = 0
+        in_alert_state = False
+        announced_codes = set()
+        missed_job_polls = 0
+        missed_prop_polls = 0
+        info = None
+        props = None
+
         while True:
-            info_req = {
-                "method": "get-job-info",
-                "params": {"job-id": job_id},
-            }
             props_req = {
                 "method": "get-prop",
                 "params": ["printer-state", "printer-sub-state", "printer-state-alerts"],
             }
-            if self.ids.get("job-info") is not None:
-                info_req["id"] = self.ids["job-info"]
             if self.ids.get("props") is not None:
                 props_req["id"] = self.ids["props"]
-            info_resp = self._send_json(info_req, expect_response=True)
-            props_resp = self._send_json(props_req, expect_response=True)
-            info = _first_result(info_resp.get("result")) if info_resp and info_resp.get("result") else None
-            props = props_resp.get("result") if props_resp and props_resp.get("result") is not None else None
-            if info is None:
-                log.error("no job info returned; breaking poll loop")
-                break
-            printer_state = props[0] if isinstance(props, list) and props else None
-            printer_sub_state = props[1] if isinstance(props, list) and len(props) > 1 else None
-            alerts = props[2] if isinstance(props, list) and len(props) > 2 else None
 
-            state = (
-                info.get("job-state"),
-                info.get("job-sub-state"),
-                printer_state,
-                printer_sub_state,
-            )
-            # Always log if state changes OR transfer-size/status changes OR cut progress changes
+            try:
+                props_resp = self._send_json(props_req, expect_response=True)
+                missed_prop_polls = 0
+            except TimeoutError:
+                missed_prop_polls += 1
+                if missed_prop_polls < (10 if in_alert_state else 3):
+                    time.sleep(poll_interval)
+                    continue
+                raise
+
+            props = props_resp.get("result") if props_resp and props_resp.get("result") is not None else None
+            printer_state = _scalar_string(props[0]) if isinstance(props, list) and props else None
+            printer_sub_state = _int_value(props[1]) if isinstance(props, list) and len(props) > 1 else 0
+            alerts = props[2] if isinstance(props, list) and len(props) > 2 else None
+            alert_codes = _extract_alert_codes(alerts)
+            recoverable = bool(alert_codes) and alert_codes.issubset(RECOVERABLE_ERROR_CODES)
+
+            for code in sorted(alert_codes):
+                if code not in announced_codes:
+                    announced_codes.add(code)
+                    prefix = "ACTION REQUIRED" if code in RECOVERABLE_ERROR_CODES else "PRINTER ALERT"
+                    log.warning("%s - Error %s: %s", prefix, code, PRINTER_ERROR_CODES.get(code, "Unknown printer alert."))
+
+            if printer_state == "60":
+                desc = _describe_alerts(alerts) or _describe_error_sub_state(printer_sub_state)
+                if recoverable:
+                    if not in_alert_state:
+                        if not self.verbose:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                        log.warning(
+                            "ACTION REQUIRED - printer paused (state=60 sub=%s alerts=%s): %s Waiting for device to resume...",
+                            printer_sub_state,
+                            alerts,
+                            desc or "User action required.",
+                        )
+                        if status_callback:
+                            status_callback(desc or f"Printer paused (alerts={alerts})")
+                    in_alert_state = True
+                    time.sleep(poll_interval)
+                    continue
+
+                if not self.verbose:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                log.error(
+                    "Printer entered non-recoverable error state (state=60 sub=%s alerts=%s)%s",
+                    printer_sub_state,
+                    alerts,
+                    f": {desc}" if desc else "",
+                )
+                return {
+                    "last_info": info,
+                    "last_props": props,
+                    "error": "printer_error",
+                    "alerts": alerts,
+                }
+
+            if in_alert_state:
+                in_alert_state = False
+                announced_codes.clear()
+                log.info("Printer alert cleared; resuming job polling.")
+
+            if printer_state == "40":
+                seen_busy = True
+                unconfirmed_idle_polls = 0
+                completion_idle_polls = 0
+            elif printer_state == "20":
+                if completion_reported:
+                    completion_idle_polls += 1
+                elif seen_busy:
+                    unconfirmed_idle_polls += 1
+
+            if 3028 <= printer_sub_state <= 3031:
+                cut_started = True
+
+            info_req = {
+                "method": "get-job-info",
+                "params": {"job-id": job_id},
+            }
+            if self.ids.get("job-info") is not None:
+                info_req["id"] = self.ids["job-info"]
+
+            try:
+                info_resp = self._send_json(info_req, expect_response=True)
+                missed_job_polls = 0
+            except TimeoutError:
+                missed_job_polls += 1
+                if missed_job_polls >= 3:
+                    try:
+                        recovered_id = self.discover_active_job_id()
+                    except Exception as exc:
+                        log.warning("get-job-id-list recovery failed: %s", exc)
+                        recovered_id = None
+                    if recovered_id and recovered_id != job_id:
+                        log.warning("Recovered active job-id %s; replacing stale job-id %s.", recovered_id, job_id)
+                        job_id = recovered_id
+                        missed_job_polls = 0
+                        continue
+                if _completion_confirmed(
+                    print_only=print_only,
+                    cut_started=cut_started,
+                    completion_reported=completion_reported,
+                    idle_polls=completion_idle_polls,
+                ):
+                    break
+                if missed_job_polls < 3 or printer_state == "40":
+                    time.sleep(poll_interval)
+                    continue
+                raise
+
+            raw_info = _first_result(info_resp.get("result")) if info_resp and info_resp.get("result") else None
+            if isinstance(raw_info, dict) and isinstance(raw_info.get("info"), dict):
+                info = raw_info["info"]
+            else:
+                info = raw_info if isinstance(raw_info, dict) else None
+
+            if info is None:
+                if completion_reported and printer_state == "20" and completion_idle_polls >= 3:
+                    if print_only or cut_started:
+                        break
+                    return {
+                        "last_info": None,
+                        "last_props": props,
+                        "error": "unconfirmed_completion",
+                    }
+                time.sleep(poll_interval)
+                continue
+
+            job_state = _int_value(info.get("job-state"))
+            job_sub_state = _int_value(info.get("job-sub-state"))
+            cut_prog = _int_value(info.get("cutting-progress"))
+            cut_total = _int_value(info.get("cut-contours"))
+            transfer_status = _int_value(info.get("transfer-status"), default=-1)
+
+            if 3028 <= job_sub_state <= 3031 or cut_total > 0:
+                cut_started = True
+
+            state = (job_state, job_sub_state, printer_state, printer_sub_state)
             transfer = (info.get("transfer-status"), info.get("transfer-size"))
             cut_tuple = (info.get("cutting-progress"), info.get("cut-contours"))
+
             if state != last_state or transfer != last_transfer or cut_tuple != last_cut:
                 if self.verbose:
                     self.logger.log_text_block(
@@ -612,22 +956,12 @@ class PixcutClient:
                         log,
                     )
                 else:
-                    # Friendly status line
-                    job_state = info.get("job-state")
-                    job_sub = info.get("job-sub-state")
-                    cut_prog = info.get("cutting-progress")
-                    cut_total = info.get("cut-contours")
-                    cut_pct = 0
-                    try:
-                        cut_pct = int((cut_prog / cut_total) * 100) if cut_prog is not None and cut_total else 0
-                    except Exception:
-                        cut_pct = 0
+                    cut_pct = int((cut_prog / cut_total) * 100) if cut_total else 0
                     readable = {
                         "job-state": self._human_job_state(job_state),
-                        "job-sub": self._human_job_sub_state(job_sub),
+                        "job-sub": self._human_job_sub_state(job_sub_state),
                         "printer": self._human_printer_state(printer_state),
-                        "printer-sub": self._human_printer_sub_state(printer_sub_state) if printer_sub_state is not None else "",
-                        "transfer": f"{transfer[1]} bytes" if transfer[1] else "",
+                        "printer-sub": self._human_printer_sub_state(printer_sub_state),
                         "cut": f"{cut_prog}/{cut_total} ({cut_pct}%)" if cut_total else "",
                     }
                     line = "Status: {job-state} / {job-sub} | Printer: {printer} / {printer-sub} | cut={cut}".format(**readable)
@@ -639,86 +973,68 @@ class PixcutClient:
                 last_transfer = transfer
                 last_cut = cut_tuple
 
-            job_state = info.get("job-state")
+            if job_state == 8 or (job_state == 7 and job_sub_state == 7000):
+                if not self.verbose:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                return {"last_info": info, "last_props": props, "error": "cancelled"}
 
-            # Alert on any known error code in printer-state-alerts.
-            if alerts and not seen_cartridge_empty:
-                desc = _describe_alerts(alerts)
+            if transfer_status == 3 and job_state != 1:
+                if not self.verbose:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                log.error("Job transfer failed (transfer-status=3).")
+                return {"last_info": info, "last_props": props, "error": "transfer_failed", "alerts": alerts}
+
+            if job_state == 7:
+                if not self.verbose:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                desc = _describe_alerts(alerts) or _describe_error_sub_state(job_sub_state)
                 if desc:
-                    seen_cartridge_empty = True
-                    log.warning(
-                        "Printer alert (alerts=%s, job-state=%s): %s",
-                        alerts,
-                        job_state,
-                        desc,
-                    )
-                    self.logger.log_text_block(
-                        "printer alert",
-                        f"Printer-state-alerts={alerts}, job-state={job_state}. {desc}",
-                        log,
-                    )
+                    log.error("Job failed: %s", desc)
+                return {"last_info": info, "last_props": props, "error": "job_error", "alerts": alerts}
 
-            if printer_state == "40":
-                seen_busy = True
-                idle_polls = 0
-            elif printer_state == "20" and seen_busy and job_state != 9:
-                idle_polls += 1
-            if job_cfg.max_idle_polls and idle_polls >= job_cfg.max_idle_polls:
+            if job_state == 9:
+                completion_reported = True
+                if printer_state == "20":
+                    completion_idle_polls = max(1, completion_idle_polls)
+
+            if _completion_confirmed(
+                print_only=print_only,
+                cut_started=cut_started,
+                completion_reported=completion_reported,
+                idle_polls=completion_idle_polls,
+            ):
+                if not self.verbose:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                break
+
+            if printer_state == "20" and seen_busy and not completion_reported and unconfirmed_idle_polls >= 3:
+                if not self.verbose:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                log.error("Printer returned to idle without confirming job completion.")
+                return {"last_info": info, "last_props": props, "error": "unconfirmed_completion"}
+
+            if completion_reported and printer_state == "20" and completion_idle_polls >= 3 and not print_only and not cut_started:
+                if not self.verbose:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                log.error("Printer reported completion but no physical cut phase was observed.")
+                return {"last_info": info, "last_props": props, "error": "unconfirmed_cut"}
+
+            if job_cfg.max_idle_polls and unconfirmed_idle_polls >= job_cfg.max_idle_polls:
                 raise TimeoutError(
-                    f"printer returned to idle {idle_polls} times without job completion; last_info={info}"
+                    f"printer returned to idle {unconfirmed_idle_polls} times without job completion; last_info={info}"
                 )
-                # If idle guard disabled, allow loop to continue; we want to observe final state.
 
-            # Break conditions: observed completion code, or stable idle after seeing busy.
-            if info.get("job-state") == 9:
-                if not self.verbose:
-                    sys.stdout.write("\n")
-                    sys.stdout.flush()
-                break
-            # Printer entered error state — check if it's a recoverable consumable issue.
-            if printer_state == "60":
-                alert_codes = _extract_alert_codes(alerts)
-                desc = _describe_alerts(alerts)
-                if alert_codes and alert_codes.issubset(RECOVERABLE_ERROR_CODES):
-                    # Consumable issue — prompt user and keep polling; device will auto-resume.
-                    if not self.verbose:
-                        sys.stdout.write("\n")
-                        sys.stdout.flush()
-                    log.warning(
-                        "ACTION REQUIRED — printer paused (alerts=%s): %s  Waiting for device to resume...",
-                        alerts,
-                        desc,
-                    )
-                    if status_callback:
-                        status_callback(desc)
-                    # Don't break; fall through to sleep and re-poll.
-                else:
-                    # Unknown or fatal error — stop polling.
-                    if not self.verbose:
-                        sys.stdout.write("\n")
-                        sys.stdout.flush()
-                    log.error(
-                        "Printer entered error state (printer-state=60, alerts=%s)%s",
-                        alerts,
-                        f": {desc}" if desc else " — no known error code mapping; check raw alerts value above.",
-                    )
-                    return {"last_info": info, "last_props": props, "error": "printer_error", "alerts": alerts}
-            # Treat job-state 7 (cancelled/failed) or transfer-status 3 as terminal error states.
-            if info.get("job-state") == 7 or info.get("transfer-status") == 3:
-                if not self.verbose:
-                    sys.stdout.write("\n")
-                    sys.stdout.flush()
-                desc = _describe_alerts(alerts)
-                if desc:
-                    log.error("Job failed — printer alerts: %s", desc)
-                return {"last_info": info, "last_props": props, "error": "job_error"}
-            if printer_state == "20" and seen_busy and idle_polls >= 3:
-                log.info("printer idle after busy; breaking poll loop. last_info=%s", info)
-                break
             if max_poll_s and (time.time() - start) > max_poll_s:
                 return {"last_info": info, "last_props": props, "error": "poll_timeout"}
+
             time.sleep(poll_interval)
-        # big-data is typically queried after completion
+
         big_req = {"method": "get-prop", "params": ["big-data"]}
         if self.ids.get("big-data") is not None:
             big_req["id"] = self.ids["big-data"]
@@ -743,8 +1059,8 @@ class PixcutClient:
 
     def preflight(self) -> None:
         """
-        Send the initial identity/state queries seen in captures (ids ~101-116) to warm up.
-        Raises RuntimeError if the printer is already in an error state.
+        Warm up identity/state and refuse a new job when the printer is busy
+        or already in an error state.
         """
         seq = [
             {"id": 101, "method": "get-prop", "params": ["firmware-revision", "hardware-revision", "model", "sku"]},
@@ -757,23 +1073,40 @@ class PixcutClient:
             except Exception as e:
                 log.warning("preflight request %s failed: %s", req.get("id"), e)
 
-        # Check printer state before attempting a job.
         try:
             state_resp = self.ping_printer_state()
             props = state_resp.get("result") if state_resp else None
-            printer_state = props[0] if isinstance(props, list) and props else None
+            printer_state = _scalar_string(props[0]) if isinstance(props, list) and props else None
+            printer_sub_state = _int_value(props[1]) if isinstance(props, list) and len(props) > 1 else 0
             alerts = props[2] if isinstance(props, list) and len(props) > 2 else None
-            if printer_state == "60":
-                desc = _describe_alerts(alerts)
-                detail = f": {desc}" if desc else f" (alerts={alerts})"
+
+            if printer_state == "40":
+                try:
+                    active_job = self.discover_active_job_id()
+                except Exception:
+                    active_job = None
+                suffix = f" (active job-id={active_job})" if active_job else ""
+                raise RuntimeError(f"Printer is busy{suffix}. Wait for the current job to finish or cancel it before starting another.")
+
+            if printer_state != "60":
+                return
+
+            codes = _extract_alert_codes(alerts)
+            desc = _describe_alerts(alerts) or _describe_error_sub_state(printer_sub_state)
+            if codes and codes.issubset(RECOVERABLE_ERROR_CODES):
                 raise RuntimeError(
-                    f"Printer is in an error state and cannot accept jobs{detail}. "
-                    "Power the printer off and back on, then retry."
+                    f"Printer is paused and needs user action before a new job can start"
+                    f"{': ' + desc if desc else ''}."
                 )
+            raise RuntimeError(
+                f"Printer is in an error state and cannot accept jobs"
+                f"{': ' + desc if desc else f' (sub={printer_sub_state} alerts={alerts})'}."
+            )
         except RuntimeError:
             raise
         except Exception as e:
             log.warning("preflight state check failed: %s", e)
+
 
 
 def run_job_session(
@@ -818,8 +1151,21 @@ def run_job_session(
             job_id, payloads = client.create_combo_job(jpg_path, plt_path, job_cfg)
         log.info("job-id assigned: %s", job_id)
         client.upload_documents(payloads, job_id=job_id)
+        if mode == "print":
+            client.confirm_job(job_id)
         try:
-            result = client.poll_job(job_id, job_cfg, status_callback=status_callback)
+            result = client.poll_job(
+                job_id,
+                job_cfg,
+                status_callback=status_callback,
+                print_only=(mode == "print"),
+            )
+        except KeyboardInterrupt:
+            try:
+                client.cancel_job(job_id)
+                log.warning("Cancellation requested for job-id %s.", job_id)
+            finally:
+                raise
         except RuntimeError as e:
             log.error("job polling aborted: %s", e)
             result = {"error": str(e)}
