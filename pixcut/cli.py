@@ -294,7 +294,7 @@ def cmd_printer(args: argparse.Namespace) -> None:
     client = PixcutClient(transport, logger)
     client.open()
     try:
-        method = "resume-printer" if args.resume else "pause-printer"
+        method = "pause-printer" if args.pause else "resume-printer"
         resp = client.send_command({"method": method, "params": []})
         logger.log_text_block(
             f"{method} response",
@@ -304,6 +304,37 @@ def cmd_printer(args: argparse.Namespace) -> None:
     finally:
         client.close()
     print(f"done. logs at {logger.describe()}")
+
+
+def cmd_job(args: argparse.Namespace) -> None:
+    """List active printer jobs or cancel one by job id."""
+    ensure_logging(verbose=args.verbose)
+    log_dir = Path(args.log_dir) if args.log_dir else (default_log_dir() if args.verbose else None)
+    logger = SessionLogger(log_dir, keep_json=args.verbose)
+
+    transport = _resolve_transport(args)
+    client = PixcutClient(transport, logger)
+    client.open()
+    try:
+        if args.list_jobs:
+            job_ids = client.get_job_ids()
+            if job_ids:
+                print("Active job ID(s): " + ", ".join(str(job_id) for job_id in job_ids))
+            else:
+                print("No active jobs reported by printer.")
+        else:
+            resp = client.cancel_job(args.cancel)
+            logger.log_text_block(
+                f"cancel-job {args.cancel} response",
+                json.dumps(resp, indent=2),
+                log,
+            )
+            print(json.dumps(resp, indent=2))
+    finally:
+        client.close()
+
+    if args.verbose:
+        print(f"done. logs at {logger.describe()}")
 
 
 def cmd_convert(args: argparse.Namespace) -> None:
@@ -336,7 +367,7 @@ def cmd_layout(args: argparse.Namespace) -> None:
     touching the printer.  Pass the outputs directly to `send --jpg ... --plt ...`.
     """
     ensure_logging(verbose=getattr(args, "verbose", False))
-    from .image_to_cut import process_images
+    from .image_to_cut import add_printer_margins, process_images
 
     img_paths = [Path(p) for p in args.images] * max(1, args.repeat)
     out_dir = Path(args.out_dir)
@@ -371,7 +402,7 @@ def cmd_layout(args: argparse.Namespace) -> None:
         plt_path = out_dir / f"layout{suffix}.plt"
         svg_path = out_dir / f"layout{suffix}_cut.svg"
 
-        result.composite.save(str(jpg_path), "JPEG", quality=95)
+        add_printer_margins(result.composite).save(str(jpg_path), "JPEG", quality=95)
         plt_path.write_text(result.cut_plt, encoding="ascii")
         svg_path.write_text(result.cut_svg, encoding="utf-8")
 
@@ -515,7 +546,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--perf-color", default="ff8800", metavar="HEX",
         help="stroke color (6-char hex, no #) marking perf-cut paths in --svg input (default: ff8800)",
     )
-    ap_send.add_argument("--perf-kp", type=int, default=53, help="knife pressure for perf-cut paths in --svg (default: 50)")
+    ap_send.add_argument("--perf-kp", type=int, default=53, help="knife pressure for perf-cut paths in --svg (default: 53)")
     ap_send.add_argument("--perf-dash", type=float, default=8.0, metavar="MM", help="perf-cut dash length in mm (default: 8.0)")
     ap_send.add_argument("--perf-gap", type=float, default=0.05, metavar="MM", help="perf-cut gap between dashes in mm (default: 0.05)")
     ap_send.add_argument("--vid", help="USB vendor id hex (e.g. 0x302c)")
@@ -609,8 +640,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap_send.add_argument(
         "--poll-interval",
         type=float,
-        default=10.0,
-        help="seconds between status polls during job monitoring (default 10s)",
+        default=2.0,
+        help="seconds between status polls during job monitoring (default 2s)",
     )
     ap_send.add_argument(
         "--max-poll-seconds",
@@ -690,6 +721,21 @@ def build_parser() -> argparse.ArgumentParser:
     ap_printer.add_argument("--log-dir", type=Path, help="explicit log directory")
     ap_printer.set_defaults(func=cmd_printer)
 
+    ap_job = sub.add_parser("job", help="list or cancel active printer jobs", parents=[common])
+    ap_job.add_argument("--vid", help="USB vendor id hex (e.g. 0x302c)")
+    ap_job.add_argument("--pid", help="USB product id hex (e.g. 0x3101)")
+    ap_job.add_argument("--auto-detect", action="store_true", default=True, help="auto-detect PixCut device (default)")
+    ap_job.add_argument("--no-auto-detect", dest="auto_detect", action="store_false", help="disable auto-detect")
+    ap_job.add_argument("--interface", type=int, default=None, help="USB interface index")
+    ap_job.add_argument("--out-ep", type=int, default=None, help="bulk OUT endpoint address")
+    ap_job.add_argument("--in-ep", type=int, default=None, help="bulk IN endpoint address")
+    ap_job.add_argument("--timeout-ms", type=int, default=None, help="USB read/write timeout")
+    ap_job.add_argument("--log-dir", type=Path, help="explicit log directory")
+    job_action = ap_job.add_mutually_exclusive_group(required=True)
+    job_action.add_argument("--list", dest="list_jobs", action="store_true", help="list active printer job IDs")
+    job_action.add_argument("--cancel", type=int, metavar="JOB_ID", help="cancel the specified printer job")
+    ap_job.set_defaults(func=cmd_job)
+
     ap_convert = sub.add_parser("convert", help="convert SVG to PLT without connecting to device", parents=[common])
     ap_convert.add_argument("--svg", required=True, help="input SVG file")
     ap_convert.add_argument("--out", help="output PLT path (default: replace .svg with .plt)")
@@ -708,7 +754,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="stroke color (6-char hex, no #) that marks perf-cut paths in the SVG (default: ff8800). "
              "Set to empty string to disable color-based separation.",
     )
-    ap_convert.add_argument("--perf-kp", type=int, default=53, help="knife pressure for perf-cut paths (default: 50)")
+    ap_convert.add_argument("--perf-kp", type=int, default=53, help="knife pressure for perf-cut paths (default: 53)")
     ap_convert.add_argument("--perf-dash", type=float, default=8.0, metavar="MM", help="perf-cut dash length in mm (default: 8.0)")
     ap_convert.add_argument("--perf-gap", type=float, default=0.05, metavar="MM", help="perf-cut gap between dashes in mm (default: 0.05)")
     ap_convert.set_defaults(func=cmd_convert)
