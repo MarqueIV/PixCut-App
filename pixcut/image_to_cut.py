@@ -60,19 +60,29 @@ PRINTER_MARGIN_Y_PX: int = 14
 
 def add_printer_margins(image):
     """
-    Place a logical 300-DPI sheet raster inside the PixCut firmware raster.
+    Place a confirmed logical 300-DPI sheet raster inside the firmware raster.
 
-    4x7 logical content is 1200x2100; the device expects 1216x2128.
-    The cut geometry remains in the logical 4x7 coordinate system.
+    4x7: 1200x2100 -> 1216x2128
+    4x6: 1200x1800 -> 1216x1828
+
+    Already-padded images are returned as RGB without adding margins again.
+    Unknown/custom dimensions are left unchanged rather than guessing.
     """
     from PIL import Image
 
     rgb = image.convert("RGB")
-    padded = Image.new(
-        "RGB",
-        (rgb.width + PRINTER_MARGIN_X_PX * 2, rgb.height + PRINTER_MARGIN_Y_PX * 2),
-        (255, 255, 255),
-    )
+    logical_to_padded = {
+        (1200, 2100): (1216, 2128),
+        (1200, 1800): (1216, 1828),
+    }
+    if rgb.size in logical_to_padded.values():
+        return rgb
+
+    padded_size = logical_to_padded.get(rgb.size)
+    if padded_size is None:
+        return rgb
+
+    padded = Image.new("RGB", padded_size, (255, 255, 255))
     padded.paste(rgb, (PRINTER_MARGIN_X_PX, PRINTER_MARGIN_Y_PX))
     return padded
 
