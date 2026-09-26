@@ -1025,7 +1025,7 @@ Note the axis swap (pixel_y → plt_x, pixel_x → plt_y), consistent with the �
   - Above `KP50` performs a full perforation through backing; risks damaging the cutter’s strip. Strip is not officially user-serviable but can likely be replaced with an 8mm wide Graphtec/Roland-compatible cutting strip.
   - Thinner media (e.g., Oracal 651 vinyl) likely needs lower pressure (≈`KP35` observed as a good starting point).
 - `KP` may be sent multiple times per job to vary pressure by path/segment; the device accepts it inline with `U/D` commands.
-- Empirical host behavior shows that after changing `KP`, a tiny blade-up reseat movement makes the new pressure reliably take effect before the next cut. The working sequence is: move `U` to the next path start, move `U` about **0.1 mm in X**, then move `U` back to the exact path start, followed by the new cut. This is a host-generated reliability technique, not a separate printer command.
+- Empirical host behavior shows that a tiny blade-up nudge/return around a `KP` transition makes the new pressure reliably take effect. The working pattern is: blade-up to the next path start, blade-up about **0.1 mm in X**, blade-up back to the exact start, emit the new `KP`, then issue the normal blade-up/start and cut commands. The extra travel prevents the firmware from optimizing the lift away; the post-`KP` start move reseats the blade at the new pressure. This is host-generated behavior, not a separate printer command.
 - Perf-cut pressure around the low-50s has been used successfully; `KP60` is too aggressive for normal perf cutting on tested sticker stock. Pressure is hardware/media-sensitive, so adjust in small steps.
 
 ## 12. Disclaimer
