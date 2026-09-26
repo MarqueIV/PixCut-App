@@ -22,9 +22,9 @@ Python toolset to control the Liene PixCut S1 over USB bulk endpoints.
 
 ---
 
-![PixCut CLI](docs/cli.png)
-
 ## Overview
+
+![PixCut CLI](docs/cli.png)
 
 This repo contains three independent but related tools:
 
